@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#e9e6df">
+<title>武蔵小杉 312号室ウォーク</title>
+<link rel="stylesheet" href="css/app.css">
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.min.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="stage" aria-label="3D表示（左側でスティック移動、右側ドラッグで見回し）">
+  <canvas id="view"></canvas>
+  <div id="stick"><div id="knob"></div></div>
+  <div id="hint-move" class="touch-hint">左側をドラッグ<br>で移動</div>
+  <div id="hint-look" class="touch-hint">右側をドラッグ<br>で見回す</div>
+</div>
+
+<header id="topbar" hidden>
+  <div class="title">
+    <strong>ラティエラ武蔵小杉</strong><span>312号室</span>
+    <em id="mode-chip" class="chip mode">屋外</em>
+  </div>
+  <nav class="tools">
+    <button id="btn-poi" type="button">施設</button>
+    <button id="btn-data" type="button">出典</button>
+    <button id="btn-settings" type="button">設定</button>
+    <button id="btn-help" type="button" aria-label="操作説明">?</button>
+  </nav>
+</header>
+<div id="notices" hidden></div>
+<canvas id="minimap" hidden aria-label="ミニマップ（タップで拡大）"></canvas>
+
+<div id="dest-hud" hidden>
+  <div id="dest-arrow" aria-hidden="true">▲</div>
+  <div class="dest-text">
+    <strong id="dest-name"></strong>
+    <span id="dest-straight"></span>
+    <span id="dest-walk"></span>
+  </div>
+  <button id="dest-clear" type="button" aria-label="目的地を解除">×</button>
+</div>
+
+<div id="bottombar" hidden>
+  <button id="btn-action" type="button" class="primary">建物の外へ</button>
+  <button id="btn-room" type="button">部屋へ戻る</button>
+  <button id="btn-reset" type="button">位置をリセット</button>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="fade"></div>
+
+<!-- 開始画面 -->
+<section id="start" class="overlay">
+  <div class="start-card">
+    <p class="eyebrow">川崎市中原区小杉町2丁目 ・ 実在物件の周辺を歩く試作</p>
+    <h1>ラティエラ武蔵小杉<br><span>312号室から街へ</span></h1>
+    <p class="lead">室内（窓からの眺め）→ 建物入口 → 周辺の道路 → コンビニ・スーパー・駅。建物は PLATEAU、道路と店舗は OpenStreetMap の実データを使います。</p>
+    <div id="load-status" class="load-status"><span class="spinner"></span><span id="load-text">準備中…</span></div>
+    <div id="load-error" class="load-error" hidden>
+      <p id="load-error-text"></p>
+      <details><summary>詳細</summary><pre id="load-error-detail"></pre></details>
+      <button id="btn-retry" type="button">再試行</button>
+    </div>
+    <button id="btn-start" type="button" class="primary big" disabled>歩いてみる</button>
+    <p class="fine">初回は対象範囲（半径約800m）のデータだけを取得し、端末に保存します。<br>写真のような景色ではなく、位置・形・高さを優先した模型表示です。</p>
+  </div>
+</section>
+
+<section id="nowebgl" class="overlay" hidden>
+  <div class="start-card">
+    <h1>3D表示を開始できません</h1>
+    <p>このブラウザでは WebGL（3D描画）が使えないため、表示できません。</p>
+    <ul>
+      <li>iPad／iPhone：設定 → Safari → 詳細 → 機能フラグで WebGL が無効になっていないか確認してください。</li>
+      <li>省電力モードやほかのタブを閉じてから、ページを再読み込みしてください。</li>
+      <li>最新の Safari／Chrome でお試しください。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- パネル -->
+<aside id="panel" class="panel" hidden>
+  <div class="panel-head">
+    <h2 id="panel-title"></h2>
+    <button id="panel-close" type="button" aria-label="閉じる">閉じる</button>
+  </div>
+  <div id="panel-body" class="panel-body"></div>
+</aside>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

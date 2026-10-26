@@ -1,0 +1,14 @@
+{
+  "note": "OpenStreetMap に未登録の施設を、店舗公式情報で確認した場合だけ追加する。営業時間は確認できた場合のみ記入。入口が不明なら entrances は空にする（「入口位置未確認」と表示）。",
+  "example": {
+    "id": "example-1",
+    "name": "（店舗名）",
+    "category": "convenience | supermarket | station",
+    "lat": 35.0,
+    "lon": 139.0,
+    "entrances": [{ "lat": 35.0, "lon": 139.0, "label": "正面入口" }],
+    "opening_hours": "公式に記載の営業時間（不明なら省略）",
+    "source": { "title": "店舗公式サイト 店舗ページ", "url": "https://...", "checked": "YYYY-MM-DD" }
+  },
+  "items": []
+}
