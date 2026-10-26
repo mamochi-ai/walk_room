@@ -368,6 +368,68 @@ console.log('\n[6] 書き出しモードと同梱データ');
   await ctx2.close();
 }
 
+// ---------- 7. 間取りの取り込み・俯瞰・視野角・速度 ----------
+console.log('\n[7] 間取りの取り込み（Claude の回答を貼り付け）・俯瞰・視野角');
+{
+  const { ctx, page, errors } = await newPage(browser, iPhone);
+  await page.waitForFunction(() => !document.getElementById('btn-start').disabled, null, { timeout: 30000 });
+  const fov = await S(page, () => window.__app.camera.fov);
+  check(fov >= 85, `縦画面でも横方向の視野を確保（縦の視野角 ${fov.toFixed(0)}°）`);
+  await page.click('#btn-start');
+  await page.waitForTimeout(600);
+  check(await page.isVisible('#btn-plan'), '窓からの眺めで「間取りを取り込む」を表示');
+  await page.click('#btn-plan');
+  const prompt = await page.inputValue('#pi-prompt');
+  check(prompt.includes('ラティエラ武蔵小杉 312号室') && prompt.includes('35.95') && prompt.includes('作り足さない'), '指示文に物件情報と「作り足さない」規則を含む');
+  check((await page.getAttribute('#pi-open', 'href')) === 'https://claude.ai/new', 'Claude を開くリンク');
+  // 不正な回答
+  await page.fill('#pi-input', 'こちらです\n```json\n{"outline":[[0,0],[5,0],[5,7],[0,7]],"walls":[{"a":[0,0],"b":[5,0],"openings":[{"type":"door","at":4.8,"width":0.8}]}],"entrance":[9,9]}\n```');
+  await page.click('#pi-check');
+  const err = await page.textContent('#pi-result');
+  check(err.includes('取り込めません') && err.includes('はみ出し') && err.includes('玄関の位置が外周の外'), '不正な内容は理由つきで取り込まない');
+  check(!(await page.isVisible('#pi-apply')), '不正なときは作成ボタンを出さない');
+  // 正しい回答（コードブロック＋前後の文章）
+  const fp = JSON.parse(fx('test-floorplan.json'));
+  delete fp.status; fp.dimensionStatus = { 全体寸法: 'テスト' };
+  await page.fill('#pi-input', '読み取りました。\n```json\n' + JSON.stringify(fp, null, 2) + '\n```\n以上です。');
+  await page.click('#pi-check');
+  check(await page.isVisible('#pi-preview'), '平面図プレビューを表示');
+  check((await page.textContent('#pi-result')).includes('35.00㎡'), '外周の面積を表示');
+  await page.screenshot({ path: SHOTS + 'iphone-plan-import.png' });
+  await page.click('#pi-apply');
+  await page.waitForTimeout(800);
+  let st = await state(page);
+  check(st.mode === 'indoor' && (await blockAt(page)) === null, '取り込み後は室内を歩ける');
+  check((await page.textContent('#notices')).includes('Claude読み取り'), '室内に「Claude読み取り（寸法推定）」を表示');
+  await page.screenshot({ path: SHOTS + 'iphone-indoor-imported.png' });
+  await page.reload();
+  await page.waitForFunction(() => !document.getElementById('btn-start').disabled, null, { timeout: 30000 });
+  await page.click('#btn-start');
+  await page.waitForTimeout(600);
+  check((await state(page)).mode === 'indoor', '取り込んだ間取りは再読み込み後も残る');
+  // 屋外の速度・俯瞰
+  await S(page, () => window.__app.enterOutdoor());
+  await page.waitForTimeout(200);
+  check(await S(page, () => window.__app.settings.speedOut === 4 && window.__app.settings.speedIn === 1.3), '屋外 4m/秒・室内 1.3m/秒が初期値');
+  await page.click('#btn-view');
+  await page.waitForTimeout(200);
+  const cam = await S(page, () => ({ y: window.__app.camera.position.y }));
+  check(cam.y > 30, `俯瞰視点に切り替え（カメラ高さ ${cam.y.toFixed(0)}m）`);
+  await page.screenshot({ path: SHOTS + 'iphone-bird.png' });
+  await page.click('#btn-view');
+  await page.waitForTimeout(200);
+  check(await S(page, () => window.__app.camera.position.y < 2), '目線に戻す');
+  // 削除
+  await S(page, () => window.__app.enterRoom());
+  await page.click('#btn-settings');
+  await page.click('#s-plan');
+  await page.click('#pi-delete');
+  await page.waitForTimeout(600);
+  check((await state(page)).mode === 'window', '取り込んだ間取りを削除すると窓からの眺めに戻る');
+  check(errors.length === 0, `コンソールエラーなし ${errors.join(' | ')}`);
+  await ctx.close();
+}
+
 // ---------- 5. WebGL 非対応 ----------
 console.log('\n[5] WebGL 非対応');
 {

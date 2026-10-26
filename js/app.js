@@ -1,7 +1,7 @@
 // アプリ本体：モード（窓からの眺め／室内／屋外）、描画ループ、UI の結線
 import * as THREE from 'three';
 import {
-  PROPERTY, SOURCES, WALK_RADIUS, EYE_HEIGHT_DEFAULT, WALK_SPEED_DEFAULT, PLAYER_RADIUS,
+  PROPERTY, SOURCES, WALK_RADIUS, EYE_HEIGHT_DEFAULT, WALK_SPEED_DEFAULT, OUTDOOR_SPEED_DEFAULT, PLAYER_RADIUS,
   WALK_M_PER_MIN, UNIT_PLACEMENT_DEFAULT, TARGET_ESTIMATE,
 } from './config.js';
 import { loadArea, clearCache, fetchFresh, frame } from './data/loader.js';
@@ -12,14 +12,16 @@ import { computePlacement, buildInterior, yawLookingOut, FACADE_LABEL } from './
 import { Controls } from './ui/controls.js';
 import { Minimap } from './ui/minimap.js';
 import { closestOnSeg, fmtMeters, ringCentroid } from './geo.js';
+import { buildPrompt, extractJson, validatePlan, normalizePlan, loadStoredPlan, storePlan, clearStoredPlan, drawPlanPreview } from './plan/import.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ---- 設定（端末内に保存。保存できなくても動作する） ----
-const SETTINGS_KEY = 'walk-room-settings-v1';
+const SETTINGS_KEY = 'walk-room-settings-v2';
 const defaults = {
-  eye: EYE_HEIGHT_DEFAULT, speed: WALK_SPEED_DEFAULT, quality: 'normal', furniture: true, edges: true,
+  eye: EYE_HEIGHT_DEFAULT, speedIn: WALK_SPEED_DEFAULT, speedOut: OUTDOOR_SPEED_DEFAULT, view: 'eye',
+  quality: 'normal', furniture: true, edges: true,
   facade: UNIT_PLACEMENT_DEFAULT.facade, along: UNIT_PLACEMENT_DEFAULT.along, storyHeight: TARGET_ESTIMATE.storyHeight,
 };
 let settings = { ...defaults };
@@ -44,7 +46,7 @@ function webglAvailable() {
   } catch { return false; }
 }
 
-let renderer, scene, camera, city, poiMarkers, routeLine, controls, minimap;
+let renderer, scene, camera, city, poiMarkers, routeLine, controls, minimap, avatar;
 
 function initRenderer() {
   const canvas = $('view');
@@ -70,11 +72,17 @@ function applyQuality() {
   const q = { low: 1, normal: 1.5, high: 2 }[settings.quality] || 1.5;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q));
 }
+// 横方向の視野角を約80°に保つ（縦画面で視野が狭いと、建物が実際より大きく迫って見えるため）
+function fovFor(aspect) {
+  const h = (80 * Math.PI) / 180;
+  const v = (2 * Math.atan(Math.tan(h / 2) / aspect) * 180) / Math.PI;
+  return Math.max(50, Math.min(90, v));
+}
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
-  camera.fov = w < h ? 75 : 65;
+  camera.fov = fovFor(w / h);
   camera.updateProjectionMatrix();
 }
 
@@ -105,11 +113,14 @@ async function startLoading(force = false) {
   try {
     if (force) await clearCache();
     const data = await loadArea({ force, signal: abortCtl.signal, onProgress: (m) => ($('load-text').textContent = m) });
-    let plan = null;
-    try {
-      const r = await fetch('data/unit-312.json', { cache: 'no-cache' });
-      if (r.ok) plan = await r.json();
-    } catch { /* 間取りなしで続行 */ }
+    // 間取り：端末で取り込んだもの → リポジトリの data/unit-312.json の順
+    let plan = loadStoredPlan(PROPERTY);
+    if (!plan) {
+      try {
+        const r = await fetch('data/unit-312.json', { cache: 'no-cache' });
+        if (r.ok) plan = await r.json();
+      } catch { /* 間取りなしで続行 */ }
+    }
     setupWorld(data, plan);
     const from = { bundled: '同梱データ', cache: '端末に保存済みのデータ', fresh: '公開データから取得' }[data.loadedFrom];
     $('load-text').textContent = `準備完了（${from}・取得日 ${data.fetchedAt.slice(0, 10)}）`;
@@ -135,12 +146,31 @@ function setupWorld(data, plan) {
   city.edgesGroup.visible = settings.edges;
   poiMarkers = buildPoiMarkers(scene, data.pois);
   routeLine = buildRouteLine(scene);
+  if (!avatar) avatar = buildAvatar();
   minimap = new Minimap($('minimap'), data);
-  state.plan = plan && plan.status !== 'pending' && Array.isArray(plan.walls) && plan.walls.length ? plan : null;
-  state.planRaw = plan;
+  setPlan(plan);
   state.entrance = computeEntrance();
   rebuildPlacement();
   applyFilter();
+}
+
+function setPlan(plan) {
+  state.plan = plan && plan.status !== 'pending' && Array.isArray(plan.walls) && plan.walls.length ? plan : null;
+  state.planSource = !state.plan ? null : plan.importedFrom === 'claude-paste' ? 'device' : 'repo';
+}
+
+// 俯瞰視点で現在地を示す人型（身長1.7m。周囲の建物の大きさの目安）
+function buildAvatar() {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color: 0x2f6fae });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 1.4, 12).translate(0, 0.7, 0), mat);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 8).translate(0, 1.55, 0), mat);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(2.4, 3.2, 32).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x2f6fae, transparent: true, opacity: 0.6 }));
+  ring.position.y = 0.06;
+  g.add(body, head, ring);
+  g.visible = false;
+  scene.add(g);
+  return g;
 }
 
 // 建物入口：OSM の entrance ノードがあれば使う。なければ道路側の仮位置。
@@ -250,10 +280,18 @@ function floorY() {
 
 function updateModeUi() {
   const m = state.mode;
-  $('mode-chip').textContent = { outdoor: '屋外', indoor: '室内', window: '窓からの眺め（推定）' }[m] || '';
+  $('mode-chip').textContent = { outdoor: '屋外', indoor: '室内', window: '窓から見る' }[m] || '';
   $('btn-room').hidden = m !== 'outdoor';
   $('btn-action').hidden = m === 'outdoor';
   $('btn-action').textContent = '建物の外へ';
+  $('btn-plan').hidden = m !== 'window';
+  $('btn-reset').hidden = m === 'window';
+  $('btn-view').hidden = m !== 'outdoor';
+  $('btn-view').textContent = settings.view === 'bird' ? '目線に戻す' : '俯瞰で見る';
+  const bird = m === 'outdoor' && settings.view === 'bird';
+  avatar.visible = bird;
+  // 俯瞰では対象建物を半透明にして、手前で視界を遮らないようにする
+  city.target?.traverse((o) => { if (o.material) { o.material.transparent = bird; o.material.opacity = bird ? 0.45 : 1; o.material.depthWrite = !bird; o.material.needsUpdate = true; } });
   updateNotices();
   updateDestHud(true);
 }
@@ -270,6 +308,7 @@ function updateNotices() {
     chips.push(['住戸位置は仮配置', 'est']);
     chips.push([`高さ推定（階高${settings.storyHeight.toFixed(1)}m）`, 'est']);
     if (m === 'window') chips.push(['間取り図未取得・室内は保留', 'miss']);
+    if (m === 'indoor' && state.planSource === 'device') chips.push(['間取りはClaude読み取り（寸法推定）', 'est']);
   }
   $('notices').innerHTML = chips.map(([t, c]) => `<span class="chip ${c}">${esc(t)}</span>`).join('');
 }
@@ -395,6 +434,89 @@ function showPoi(p) {
   });
 }
 
+// ---- 間取りの取り込み（Claude で読み取った JSON を貼り付け） ----
+function showPlanImport() {
+  const prompt = buildPrompt(PROPERTY);
+  const has = state.planSource === 'device';
+  const html = `
+    <p>間取り図の画像を Claude に読み取らせ、結果を貼り付けると室内を作ります（このアプリは AI に直接つながりません）。</p>
+    <h3>1. 指示文をコピーして Claude を開く</h3>
+    <div class="row"><a id="pi-open" class="btn primary" href="https://claude.ai/new" target="_blank" rel="noopener">指示文をコピーして Claude を開く</a></div>
+    <p class="note">Claude で指示文を貼り付け、間取り図の画像を添付して送信します。コピーできない場合は下の指示文を長押しで選択してください。</p>
+    <details><summary>指示文を表示</summary><textarea id="pi-prompt" class="mono" rows="8" readonly>${esc(prompt)}</textarea>
+      <div class="row"><button type="button" id="pi-copy">指示文をコピー</button></div></details>
+    <h3>2. Claude の回答を貼り付ける</h3>
+    <textarea id="pi-input" class="mono" rows="6" placeholder="Claude の回答（JSON のコードブロック）をここに貼り付け"></textarea>
+    <div class="row"><button type="button" id="pi-paste">クリップボードから貼り付け</button><button type="button" id="pi-check" class="primary">内容を確認</button></div>
+    <div id="pi-result"></div>
+    ${has ? `<h3>取り込み済みの間取り</h3><p class="note">この端末に保存されています（${esc((state.plan.importedAt || '').slice(0, 10))}）。他の端末でも使うには JSON をコピーして開発者に渡し、data/unit-312.json に反映してください。</p>
+      <div class="row"><button type="button" id="pi-export">JSONをコピー</button><button type="button" id="pi-delete">取り込んだ間取りを削除</button></div>` : ''}`;
+  openPanel('間取りを取り込む', html, (el) => {
+    const copy = async (text) => {
+      try { await navigator.clipboard.writeText(text); toast('コピーしました'); return true; } catch {
+        const ta = el.querySelector('#pi-prompt');
+        ta.closest('details').open = true; ta.focus(); ta.select();
+        toast('自動でコピーできませんでした。選択された指示文をコピーしてください', 4000);
+        return false;
+      }
+    };
+    el.querySelector('#pi-open').addEventListener('click', () => { copy(prompt); });
+    el.querySelector('#pi-copy').addEventListener('click', () => copy(prompt));
+    el.querySelector('#pi-paste').addEventListener('click', async () => {
+      try { el.querySelector('#pi-input').value = await navigator.clipboard.readText(); } catch { toast('貼り付けできませんでした。入力欄を長押しして「ペースト」してください', 4000); }
+    });
+    el.querySelector('#pi-check').addEventListener('click', () => checkPlanInput(el));
+    el.querySelector('#pi-export')?.addEventListener('click', () => copy(JSON.stringify(state.plan, null, 2)));
+    el.querySelector('#pi-delete')?.addEventListener('click', () => {
+      clearStoredPlan(PROPERTY);
+      reloadPlan(null);
+      closePanel();
+      toast('取り込んだ間取りを削除しました');
+    });
+  });
+}
+
+function checkPlanInput(el) {
+  const out = el.querySelector('#pi-result');
+  let plan;
+  try { plan = extractJson(el.querySelector('#pi-input').value); } catch (e) {
+    out.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+    return;
+  }
+  const v = validatePlan(plan, PROPERTY);
+  const list = (arr, cls) => arr.length ? `<ul class="${cls}">${arr.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+  const ds = plan.dimensionStatus && typeof plan.dimensionStatus === 'object'
+    ? `<dl class="kv">${Object.entries(plan.dimensionStatus).map(([k, val]) => `<dt>${esc(k)}</dt><dd>${esc(val)}</dd>`).join('')}</dl>` : '';
+  out.innerHTML = `
+    <h3>3. 元の間取り図と見比べる</h3>
+    ${v.errors.length ? `<p class="error">取り込めません。Claude に次の点を伝えて直してもらってください。</p>${list(v.errors, 'error')}` : ''}
+    ${v.warnings.length ? `<p class="warn">確認してください</p>${list(v.warnings, 'warn')}` : ''}
+    ${!v.errors.length ? `<canvas id="pi-preview" class="plan-preview"></canvas>
+      <p class="note">外周の面積 ${v.area.toFixed(2)}㎡（専有面積 ${PROPERTY.unitInfo.areaM2}㎡ は壁芯のため、室内側は1割ほど小さくなるのが普通です）。寸法は推定として扱います。</p>
+      ${ds}
+      <div class="row"><button type="button" id="pi-apply" class="primary">この内容で室内を作る</button></div>` : ''}`;
+  if (v.errors.length) return;
+  drawPlanPreview(out.querySelector('#pi-preview'), plan);
+  out.querySelector('#pi-apply').addEventListener('click', () => {
+    const np = normalizePlan(plan, PROPERTY);
+    if (!storePlan(PROPERTY, np)) toast('この端末に保存できませんでした（表示中のみ有効）', 4000);
+    reloadPlan(np);
+    closePanel();
+    fade(enterRoom);
+    toast('室内を作りました。寸法は推定を含みます', 4000);
+  });
+}
+
+async function reloadPlan(plan) {
+  if (!plan) {
+    try { const r = await fetch('data/unit-312.json', { cache: 'no-cache' }); if (r.ok) plan = await r.json(); } catch { /* noop */ }
+  }
+  setPlan(plan);
+  const inRoom = state.mode === 'indoor' || state.mode === 'window';
+  rebuildPlacement();
+  if (inRoom) enterRoom();
+}
+
 const STATUS = { confirmed: ['確認済', 'ok'], estimated: ['推定', 'est'], missing: ['未取得', 'miss'] };
 function showData() {
   const d = state.data;
@@ -417,7 +539,7 @@ function showData() {
       ${fact('道路・歩道', `OSM の歩行可能な道路 ${d.walk.length}本。私道・通行制限のある道は除外。道路の幅は種別から推定`, 'estimated')}
       ${fact('施設', `OSM のコンビニ・スーパー・駅 ${d.pois.length}件`, 'confirmed')}
       ${fact('地形', '高低差は反映せず平坦として表示（地形は簡略化）', 'estimated')}
-      ${fact('間取り・室内', state.plan ? `data/unit-312.json（${esc(state.plan.status)}）` : '間取り図が未取得のため室内は保留。「窓からの眺め（推定）」のみ', state.plan ? 'estimated' : 'missing')}
+      ${fact('間取り・室内', state.planSource === 'device' ? `この端末で取り込んだ間取り（Claude による読み取り、${esc((state.plan.importedAt || '').slice(0, 10))}）。寸法は推定を含む` : state.plan ? `data/unit-312.json（${esc(state.plan.status)}）` : '間取り図が未取得のため室内は保留。「窓からの眺め（推定）」のみ', state.plan ? 'estimated' : 'missing')}
     </ul>
     ${(d.notes || []).map((n) => `<p class="warn">${esc(n)}</p>`).join('')}
     <h3>出典</h3>
@@ -439,14 +561,20 @@ function showSettings() {
   const seg = (name, val, opts) => `<div class="seg" data-seg="${name}">${opts.map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${String(val) === String(v)}">${l}</button>`).join('')}</div>`;
   const html = `
     <div class="setting"><label for="s-eye">目線の高さ <output id="o-eye">${settings.eye.toFixed(2)} m</output></label>
-      <input id="s-eye" type="range" min="1.0" max="2.0" step="0.05" value="${settings.eye}"></div>
-    <div class="setting"><label for="s-speed">移動速度 <output id="o-speed">${settings.speed.toFixed(1)} m/秒</output></label>
-      <input id="s-speed" type="range" min="0.5" max="4" step="0.1" value="${settings.speed}">
-      <span class="note">徒歩の目安は約1.3m/秒（80m/分）。</span></div>
+      <input id="s-eye" type="range" min="1.0" max="2.0" step="0.05" value="${settings.eye}">
+      <span class="note">人の目の高さ（約1.6m）です。街全体の大きさをつかむには屋外の「俯瞰で見る」を使ってください。</span></div>
+    <div class="setting"><label for="s-speedOut">屋外の移動速度 <output id="o-speedOut">${settings.speedOut.toFixed(1)} m/秒</output></label>
+      <input id="s-speedOut" type="range" min="1" max="12" step="0.5" value="${settings.speedOut}">
+      <span class="note">実際の徒歩は約1.3m/秒（80m/分）。初期値はその約3倍です。徒歩時間の表示は速度に関係なく80m/分で計算します。</span></div>
+    <div class="setting"><label for="s-speedIn">室内の移動速度 <output id="o-speedIn">${settings.speedIn.toFixed(1)} m/秒</output></label>
+      <input id="s-speedIn" type="range" min="0.5" max="2.5" step="0.1" value="${settings.speedIn}"></div>
+    <div class="setting"><label>屋外の視点</label>${seg('view', settings.view, [['eye', '目線（人の高さ）'], ['bird', '俯瞰（上空から）']])}</div>
     <div class="setting"><label>画質（重い場合は「低」）</label>${seg('quality', settings.quality, [['low', '低'], ['normal', '標準'], ['high', '高']])}</div>
     <div class="setting"><label>建物の輪郭線</label>${seg('edges', settings.edges, [[true, '表示'], [false, '非表示']])}</div>
     <div class="setting"><label>家具</label>${seg('furniture', settings.furniture, [[true, '表示'], [false, '非表示']])}
       ${state.plan ? '' : '<span class="note">間取り図が未取得のため室内はまだありません。</span>'}</div>
+    <h3>間取り</h3>
+    <div class="row"><button type="button" id="s-plan">間取りを取り込む（Claude を利用）</button></div>
     <h3>住戸の仮配置（未確認のため調整可能）</h3>
     <p class="note">312号室の建物内の位置・向きは確認できていません。初期値は、同じ面積の1階住戸が「西向き」と掲載されていることからの推定です。</p>
     <div class="setting"><label>窓の向き</label>${seg('facade', settings.facade, Object.entries(FACADE_LABEL))}</div>
@@ -467,7 +595,8 @@ function showSettings() {
       });
     };
     bindRange('eye', 'eye', (v) => `${v.toFixed(2)} m`);
-    bindRange('speed', 'speed', (v) => `${v.toFixed(1)} m/秒`);
+    bindRange('speedOut', 'speedOut', (v) => `${v.toFixed(1)} m/秒`);
+    bindRange('speedIn', 'speedIn', (v) => `${v.toFixed(1)} m/秒`);
     const replace = () => { const inRoom = state.mode !== 'outdoor'; rebuildPlacement(); if (inRoom) enterRoom(); updateNotices(); };
     bindRange('along', 'along', (v) => `${Math.round(v * 100)}%`, replace);
     bindRange('story', 'storyHeight', (v) => `${v.toFixed(2)} m`, replace);
@@ -482,7 +611,9 @@ function showSettings() {
       if (k === 'edges') city.edgesGroup.visible = v;
       if (k === 'furniture') state.interior?.setFurniture(v);
       if (k === 'facade') replace();
+      if (k === 'view') updateModeUi();
     })));
+    el.querySelector('#s-plan').addEventListener('click', showPlanImport);
     el.querySelector('#s-reset').addEventListener('click', () => {
       settings = { ...defaults };
       saveSettings();
@@ -537,7 +668,7 @@ function tick() {
   // 移動
   if ((inp.x || inp.y) && state.mode !== 'window') {
     if (!hintsHidden) { hintsHidden = true; $('hint-move').classList.add('gone'); $('hint-look').classList.add('gone'); }
-    const sp = settings.speed * dt;
+    const sp = (state.mode === 'outdoor' ? settings.speedOut : settings.speedIn) * dt;
     const fx = -Math.sin(state.yaw), fz = -Math.cos(state.yaw);
     const rx = Math.cos(state.yaw), rz = -Math.sin(state.yaw);
     const dx = (fx * inp.y + rx * inp.x) * sp, dz = (fz * inp.y + rz * inp.x) * sp;
@@ -557,8 +688,18 @@ function tick() {
     const near = e && Math.hypot(e[0] - state.pos.x, e[1] - state.pos.z) < 1.6;
     $('btn-action').hidden = !near;
   }
-  camera.position.set(state.pos.x, floorY() + settings.eye, state.pos.z);
-  camera.rotation.set(state.pitch, state.yaw, 0);
+  if (state.mode === 'outdoor' && settings.view === 'bird') {
+    // 俯瞰：現在地の後方上空から見下ろす（人型の印で大きさの目安を示す）
+    const back = 40, up = 55;
+    const fx = -Math.sin(state.yaw), fz = -Math.cos(state.yaw);
+    camera.position.set(state.pos.x - fx * back, up, state.pos.z - fz * back);
+    camera.rotation.set(-0.9 + state.pitch * 0.5, state.yaw, 0);
+    avatar.position.set(state.pos.x, 0, state.pos.z);
+    avatar.rotation.y = state.yaw;
+  } else {
+    camera.position.set(state.pos.x, floorY() + settings.eye, state.pos.z);
+    camera.rotation.set(state.pitch, state.yaw, 0);
+  }
   if (state.dest) {
     if (state.mode === 'outdoor') updateRoute();
     updateDestHud();
@@ -592,6 +733,12 @@ function main() {
   $('btn-action').addEventListener('click', () => fade(enterOutdoor));
   $('btn-room').addEventListener('click', () => fade(enterRoom));
   $('btn-reset').addEventListener('click', resetPosition);
+  $('btn-plan').addEventListener('click', showPlanImport);
+  $('btn-view').addEventListener('click', () => {
+    settings.view = settings.view === 'bird' ? 'eye' : 'bird';
+    saveSettings();
+    updateModeUi();
+  });
   $('btn-poi').addEventListener('click', showPoiList);
   $('btn-data').addEventListener('click', showData);
   $('btn-settings').addEventListener('click', showSettings);
@@ -606,7 +753,7 @@ function main() {
     }
     minimap.setBig(!minimap.big);
   });
-  window.__app = { state, settings, enterRoom, enterOutdoor, setDest, frame, camera };
+  window.__app = { state, get settings() { return settings; }, enterRoom, enterOutdoor, setDest, frame, camera };
   tick();
   startLoading(false);
 }

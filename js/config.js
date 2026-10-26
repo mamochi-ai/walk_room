@@ -3,9 +3,12 @@
 // 調査の詳細は docs/RESEARCH.md を参照。
 
 export const PROPERTY = {
+  id: 'latierra-musashikosugi-312', // 端末内に保存する間取りのキー
   name: 'ラティエラ武蔵小杉',
   unit: '312号室',
   address: '神奈川県川崎市中原区小杉町2丁目220',
+  // 間取りの取り込み時に Claude へ渡す確認済み情報（物件を変えるときはここを変える）
+  unitInfo: { floor: 3, layout: '1LDK+SIC', areaM2: 35.95 },
   facts: [
     { label: '所在地', value: '川崎市中原区小杉町2-220', status: 'confirmed', src: '三井の賃貸 掲載ページ／OSM' },
     { label: '規模・構造', value: '鉄筋コンクリート造 地上6階建', status: 'confirmed', src: '三井の賃貸 掲載ページ／東京ガス不動産 2023-01-19 発表' },
@@ -44,7 +47,8 @@ export const UNIT_PLACEMENT_DEFAULT = {
 };
 
 export const EYE_HEIGHT_DEFAULT = 1.6;
-export const WALK_SPEED_DEFAULT = 1.3; // m/s（80m/分 ≒ 1.33m/s）
+export const WALK_SPEED_DEFAULT = 1.3; // 室内 m/s（80m/分 ≒ 1.33m/s）
+export const OUTDOOR_SPEED_DEFAULT = 4.0; // 屋外 m/s（実際の徒歩の約3倍。設定で変更可）
 export const PLAYER_RADIUS = 0.25;
 export const WALK_M_PER_MIN = 80; // 不動産の表示に関する公正競争規約の徒歩所要時間の基準
 

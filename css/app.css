@@ -203,3 +203,19 @@ dl.kv dd { margin: 0; min-width: 0; word-break: break-word; }
   .title > span { display: none; }
   #dest-hud { max-width: calc(100% - 16px); }
 }
+
+/* 間取りの取り込み */
+a.btn {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 8px 14px; border-radius: 10px;
+  text-decoration: none; font-weight: 600; -webkit-tap-highlight-color: transparent;
+}
+a.btn.primary { background: var(--accent); color: #fff; }
+.panel-body a.btn { word-break: normal; }
+textarea.mono {
+  width: 100%; font: 12px/1.5 ui-monospace, Menlo, monospace; border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+  background: #fff; color: var(--ink); resize: vertical; -webkit-user-select: text; user-select: text;
+}
+details summary { cursor: pointer; color: var(--accent); margin: 6px 0; }
+.plan-preview { width: 100%; aspect-ratio: 1 / 1; max-width: 100%; border: 1px solid var(--line); border-radius: 10px; background: #fff; display: block; }
+.error { color: var(--miss); font-size: 13px; }
+ul.error, ul.warn { margin: 4px 0 8px; padding-left: 1.2em; }
