@@ -489,7 +489,10 @@ function renderLocation(body) {
     cur.entrance = pending.entrance ? { ...pending.entrance, source: 'user' } : null;
     await save();
     toast('物件の位置を確定しました');
-    render();
+    // 地図は作り直さず、表示だけ更新する
+    const note = body.querySelector('#loc-done') || body.querySelector('#pin-status').insertAdjacentElement('beforebegin', Object.assign(document.createElement('p'), { id: 'loc-done', className: 'msg ok' }));
+    note.textContent = `確定済み：${cur.location.lat.toFixed(6)}, ${cur.location.lon.toFixed(6)}（${cur.location.label || ''}）`;
+    $('wiz-steps').querySelector('[data-step="location"]')?.classList.add('done');
   });
   body.querySelector('#wz-walk').addEventListener('click', async () => {
     const s = steps(cur);

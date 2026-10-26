@@ -6,7 +6,7 @@ const pinIcon = (cls, text) => L.divIcon({ className: `map-pin ${cls}`, html: `<
 
 export class MapPicker {
   constructor(el, center) {
-    this.map = L.map(el, { zoomControl: true, attributionControl: true, tap: true }).setView([center.lat, center.lon], center.zoom || 16);
+    this.map = L.map(el, { zoomControl: true, attributionControl: true, zoomAnimation: false, fadeAnimation: false, markerZoomAnimation: false }).setView([center.lat, center.lon], center.zoom || 16);
     L.tileLayer(SOURCES.gsiTiles.url, { maxZoom: SOURCES.gsiTiles.maxZoom, attribution: SOURCES.gsiTiles.attribution }).addTo(this.map);
     this.candLayer = L.layerGroup().addTo(this.map);
     this.pin = null;
@@ -17,7 +17,7 @@ export class MapPicker {
       if (this.mode === 'pin') this.setPin(e.latlng.lat, e.latlng.lng, true);
       else if (this.mode === 'entrance') this.setEntrance(e.latlng.lat, e.latlng.lng, true);
     });
-    setTimeout(() => this.map.invalidateSize(), 50);
+    this.t = setTimeout(() => this.map && this.map._loaded && this.map.invalidateSize(), 50);
   }
   showCandidates(list, onPick) {
     this.candLayer.clearLayers();
@@ -25,7 +25,7 @@ export class MapPicker {
       const m = L.marker([c.lat, c.lon], { icon: pinIcon('cand', String(i + 1)) }).addTo(this.candLayer);
       m.on('click', () => onPick?.(i));
     });
-    if (list.length) this.map.fitBounds(L.latLngBounds(list.map((c) => [c.lat, c.lon])).pad(0.4), { maxZoom: 17 });
+    if (list.length) this.map.fitBounds(L.latLngBounds(list.map((c) => [c.lat, c.lon])).pad(0.4), { maxZoom: 17, animate: false });
   }
   setPin(lat, lon, user = false) {
     if (!this.pin) {
@@ -44,6 +44,6 @@ export class MapPicker {
   clearEntrance() {
     if (this.entrance) { this.map.removeLayer(this.entrance); this.entrance = null; }
   }
-  focus(lat, lon, zoom = 18) { this.map.setView([lat, lon], zoom); }
-  destroy() { this.map.remove(); }
+  focus(lat, lon, zoom = 18) { this.map.setView([lat, lon], zoom, { animate: false }); }
+  destroy() { clearTimeout(this.t); this.map.stop(); this.map.off(); this.map.remove(); }
 }

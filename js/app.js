@@ -632,9 +632,11 @@ function tick() {
     const dx = (fx * inp.y + rx * inp.x) * sp, dz = (fz * inp.y + rz * inp.x) * sp;
     const nav = state.mode === 'indoor' ? state.interior.nav : state.nav;
     const res = moveWithCollision(nav, state.pos, dx, dz, PLAYER_RADIUS);
-    if (res.reason && performance.now() - state.lastBlockMsg > 2500) {
-      const msg = { range: `ここから先は範囲外です（中心から${WALK_RADIUS}m）`, road: '道路・歩道として確認できない場所には進めません', building: '', wall: '' }[res.reason];
-      if (msg) { toast(msg); state.lastBlockMsg = performance.now(); }
+    // 案内は種類ごとに間引く（範囲外の案内が他の案内に隠れないように）
+    state.lastBlock = state.lastBlock || {};
+    if (res.reason && performance.now() - (state.lastBlock[res.reason] || 0) > 2500) {
+      const msg = { range: `ここから先は範囲外です（物件から${WALK_RADIUS}m）`, road: '道路・歩道として確認できない場所には進めません', building: '', wall: '' }[res.reason];
+      if (msg) { toast(msg); state.lastBlock[res.reason] = performance.now(); }
     }
   } else if ((inp.x || inp.y) && state.mode === 'window' && performance.now() - state.lastBlockMsg > 4000) {
     toast('間取り図が未取得のため室内は歩けません。「建物の外へ」で屋外に出られます。', 3500);
