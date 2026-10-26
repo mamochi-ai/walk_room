@@ -3,7 +3,9 @@
 // - PLATEAU 風の 3D Tiles（tileset.json と b3dm。ECEF 座標・RTC_CENTER・Y-up glTF・_BATCHID）
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { LocalFrame } from '../js/geo.js';
-import { ORIGIN, TARGET_OSM_WAY } from '../js/config.js';
+// サンプル物件（ラティエラ武蔵小杉）の位置。合成データはこの位置を基準に作る
+const ORIGIN = { lat: 35.57927, lon: 139.6556 };
+const TARGET_OSM_WAY = 1350297048;
 
 const OUT = new URL('./fixtures/', import.meta.url);
 mkdirSync(OUT, { recursive: true });
@@ -141,7 +143,7 @@ writeFileSync(new URL('tileset.json', OUT), JSON.stringify({
   },
 }));
 
-// ---- 室内エンジン検証用の間取り（架空。テストでのみ data/unit-312.json の代わりに配信） ----
+// ---- 旧形式（v1）の間取り（架空。旧版の保存データの移行テストに使う） ----
 writeFileSync(new URL('test-floorplan.json', OUT), JSON.stringify({
   status: 'draft', note: 'TEST FIXTURE — 架空の間取り。本番データではない',
   ceilingHeight: { value: 2.5, status: 'estimated' },
@@ -160,3 +162,87 @@ writeFileSync(new URL('test-floorplan.json', OUT), JSON.stringify({
   spawn: { at: [2.5, 2.5], yawDeg: 0 },
 }));
 console.log('fixtures written', { nodes: nodes.length, ways: ways.length, b3dmBuildings: buildings.length });
+
+// ---- v2 形式の解析結果（架空。Claude の回答を模したテスト用データ） ----
+const v2 = {
+  format: 'walk-room-floorplan/2',
+  images: [{ index: 1, role: 'floorplan', content: 'TEST 間取り図' }, { index: 2, role: 'overview', content: 'TEST 物件概要' }],
+  consistency: { sameProperty: true, notes: null },
+  property: {
+    name: { value: 'テスト用マンション', source: 'image', evidence: '画像2 上部' },
+    unit: { value: '101', source: 'image', evidence: '画像1 右上' },
+    address: { value: null, source: null, evidence: '住所の記載なし' },
+    floor: { value: 3, source: 'image', evidence: '画像2' },
+    areaM2: { value: 45.0, source: 'image', evidence: '画像1 右下' },
+    layout: { value: '1LDK', source: 'image', evidence: '画像1' },
+    orientation: { value: '南', source: 'image', evidence: '画像1 方位記号' },
+    buildingFloors: { value: 6, source: 'image', evidence: '画像2' },
+    stations: { value: [{ name: 'テスト駅', line: 'テスト線', walkMin: 7 }], source: 'image', evidence: '画像2 交通' },
+  },
+  drawing: { units: 'm', scale: { method: 'area', source: 'estimated', evidence: 'TEST' }, north: { imageUpBearingDeg: null, source: null, evidence: null }, imageBox: { imageIndex: 1, box: [0.1, 0.1, 0.9, 0.9] } },
+  outline: [[0, 0], [6.4, 0], [6.4, 6.6], [0, 6.6]],
+  rooms: [
+    { id: 'ld', name: 'LD', type: 'living', area: { value: '12帖', source: 'image' }, poly: [[0, 0], [6.4, 0], [6.4, 3.6], [0, 3.6]] },
+    { id: 'hall', name: '廊下', type: 'hall', poly: [[0, 3.6], [1.6, 3.6], [1.6, 6.6], [0, 6.6]] },
+    { id: 'wash', name: '洗面・浴室', type: 'washroom', poly: [[1.6, 3.6], [3.6, 3.6], [3.6, 6.6], [1.6, 6.6]] },
+    { id: 'br', name: '洋室', type: 'bedroom', area: { value: '6帖', source: 'image' }, poly: [[3.6, 3.6], [6.4, 3.6], [6.4, 6.6], [3.6, 6.6]] },
+  ],
+  walls: [
+    { id: 'w1', a: [0, 0], b: [6.4, 0], exterior: true, thickness: { value: 0.18, source: 'estimated' }, openings: [{ type: 'window_door', at: 3.2, width: 1.8 }] },
+    { id: 'w2', a: [6.4, 0], b: [6.4, 6.6], exterior: true, thickness: 0.18, openings: [{ type: 'window', at: 1.8, width: 1.2 }] },
+    { id: 'w3', a: [6.4, 6.6], b: [0, 6.6], exterior: true, thickness: 0.18, openings: [{ type: 'door', at: 5.6, width: 0.8 }] },
+    { id: 'w4', a: [0, 6.6], b: [0, 0], exterior: true, thickness: 0.18, openings: [{ type: 'window', at: 4.9, width: 1.0 }] },
+    { id: 'w5', a: [0, 3.6], b: [6.4, 3.6], thickness: 0.1, openings: [{ type: 'door', at: 1.0, width: 0.8 }, { type: 'door', at: 5.0, width: 0.8 }] },
+    { id: 'w6', a: [1.6, 3.6], b: [1.6, 6.6], thickness: 0.1, openings: [{ type: 'sliding', at: 1.5, width: 0.7 }] },
+    { id: 'w7', a: [3.6, 3.6], b: [3.6, 6.6], thickness: 0.1, openings: [] },
+  ],
+  fixtures: [
+    { type: 'kitchen', label: 'キッチン', poly: [[4.6, 2.9], [6.3, 2.9], [6.3, 3.5], [4.6, 3.5]] },
+    { type: 'ps', label: 'PS', poly: [[1.65, 6.2], [2.0, 6.2], [2.0, 6.55], [1.65, 6.55]] },
+  ],
+  balconies: [{ poly: [[0, -1.2], [6.4, -1.2], [6.4, 0], [0, 0]] }],
+  furniture: [],
+  connections: [['hall', 'ld'], ['ld', 'br'], ['hall', 'wash']],
+  entrance: { at: [0.8, 6.1], source: 'image' },
+  spawn: { at: [3.2, 1.8], lookAt: [3.2, 0] },
+  heights: { ceiling: { value: 2.4, source: 'estimated' } },
+  dimensions: [{ label: '全体幅', value: 6.4, source: 'estimated', evidence: 'TEST' }],
+  checks: { roomsInsideOutline: true, noOverlap: true, openingsOnWalls: true, reachableFromEntrance: true, areaConsistent: true },
+  uncertain: [],
+  toConfirm: [],
+};
+writeFileSync(new URL('analysis-v2.json', OUT), JSON.stringify(v2, null, 2));
+
+// ---- テスト用 PNG（無地に枠線） ----
+import { deflateSync } from 'node:zlib';
+function png(w, h, draw) {
+  const raw = Buffer.alloc((w + 1) * h);
+  for (let y = 0; y < h; y++) { raw[y * (w + 1)] = 0; for (let x = 0; x < w; x++) raw[y * (w + 1) + 1 + x] = draw(x, y) ? 30 : 250; }
+  const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+  const crc = (b) => { let c = 0xffffffff; for (const x of b) c = crcTable[(c ^ x) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (t, d) => { const l = Buffer.alloc(4); l.writeUInt32BE(d.length); const td = Buffer.concat([Buffer.from(t), d]); const c = Buffer.alloc(4); c.writeUInt32BE(crc(td)); return Buffer.concat([l, td, c]); };
+  const ih = Buffer.alloc(13); ih.writeUInt32BE(w, 0); ih.writeUInt32BE(h, 4); ih[8] = 8; ih[9] = 0; ih[10] = 0; ih[11] = 0; ih[12] = 0;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ih), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+writeFileSync(new URL('floorplan.png', OUT), png(400, 400, (x, y) => (x > 40 && x < 360 && (Math.abs(y - 40) < 3 || Math.abs(y - 360) < 3)) || (y > 40 && y < 360 && (Math.abs(x - 40) < 3 || Math.abs(x - 360) < 3)) || (Math.abs(y - 198) < 2 && x > 40 && x < 360)));
+writeFileSync(new URL('overview.png', OUT), png(300, 200, (x, y) => y % 20 < 2 && x > 20 && x < 280));
+
+// ---- 住所検索（国土地理院形式）の応答：候補2件。2件目が物件位置 ----
+const far = frame.toLatLon(300, -200);
+writeFileSync(new URL('gsi-geocode.json', OUT), JSON.stringify([
+  { geometry: { coordinates: [far.lon, far.lat], type: 'Point' }, type: 'Feature', properties: { title: 'TEST 候補A（別の場所）' } },
+  { geometry: { coordinates: [ORIGIN.lon, ORIGIN.lat], type: 'Point' }, type: 'Feature', properties: { title: 'TEST 候補B' } },
+]));
+
+// ---- PLATEAU 整備範囲外を再現するタイルセット（範囲外の子だけ） ----
+writeFileSync(new URL('tileset-far.json', OUT), JSON.stringify({
+  asset: { version: '1.0' }, geometricError: 500,
+  root: { boundingVolume: { region: [(ORIGIN.lon + 1) * R, (ORIGIN.lat + 1) * R, (ORIGIN.lon + 1.1) * R, (ORIGIN.lat + 1.1) * R, 0, 200] }, geometricError: 0, children: [
+    { boundingVolume: { region: [(ORIGIN.lon + 1) * R, (ORIGIN.lat + 1) * R, (ORIGIN.lon + 1.1) * R, (ORIGIN.lat + 1.1) * R, 0, 200] }, geometricError: 0, content: { uri: 'far.b3dm' } }] },
+}));
+// OSM 建物（PLATEAU 範囲外のときの代替）
+writeFileSync(new URL('overpass-buildings.json', OUT), JSON.stringify({ elements: [
+  ...[[60, -20], [100, -20], [100, 20], [60, 20]].map(([x, z], i) => { const { lat, lon } = frame.toLatLon(x, z); return { type: 'node', id: 90000 + i, lat, lon }; }),
+  { type: 'way', id: 99000, nodes: [90000, 90001, 90002, 90003, 90000], tags: { building: 'yes', 'building:levels': '4' } },
+] }));
+console.log('v2 fixtures written');

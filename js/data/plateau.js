@@ -68,7 +68,7 @@ function volumeIntersects(bv, transform, area) {
 }
 
 // 対象範囲にかかるコンテンツ（b3dm/glb/cmpt）の URL と座標変換を列挙
-export async function collectContents(tilesetUrl, tilesetJson, area, { signal, onProgress, depth = 0 } = {}) {
+export async function collectContents(tilesetUrl, tilesetJson, area, { signal, onProgress, depth = 0, used = [] } = {}) {
   const out = [];
   const upAxis = tilesetJson.asset?.gltfUpAxis || 'Y';
   async function walk(tile, parentM, parentRefine, baseUrl) {
@@ -86,8 +86,9 @@ export async function collectContents(tilesetUrl, tilesetJson, area, { signal, o
       if (/\.json(\?|$)/i.test(uri)) {
         if (depth > 6) continue;
         const sub = await fetchOk(abs, 'json', signal);
-        onProgress?.(`外部タイルセットを確認中…`);
-        const subOut = await collectContents(abs, sub, area, { signal, onProgress, depth: depth + 1, parentMatrix: m });
+        onProgress?.(`PLATEAU タイルセットを確認中…`);
+        const subOut = await collectContents(abs, sub, area, { signal, onProgress, depth: depth + 1, used });
+        if (subOut.length) used.push(abs);
         // 外部タイルセットはルートの transform を親に連結する
         for (const s of subOut) s.matrix.premultiply(m);
         out.push(...subOut);
@@ -280,8 +281,9 @@ export function trisToBuilding(tris) {
 export async function loadPlateauBuildings(cfg, frame, area, { signal, onProgress } = {}) {
   onProgress?.('PLATEAU タイルセットを確認中…');
   const ts = await findTileset(cfg.tilesetCandidates, signal);
-  const contents = await collectContents(ts.url, ts.json, area, { signal, onProgress });
-  if (!contents.length) throw new Error('対象範囲に PLATEAU の建物タイルが見つかりません');
+  const used = [];
+  const contents = await collectContents(ts.url, ts.json, area, { signal, onProgress, used });
+  if (!contents.length) throw Object.assign(new Error('この地点は PLATEAU の建物データの整備範囲外です'), { outOfArea: true });
   const seen = new Set();
   const buildings = [];
   let done = 0, failed = 0;
@@ -307,5 +309,7 @@ export async function loadPlateauBuildings(cfg, frame, area, { signal, onProgres
   }
   await Promise.all([worker(), worker(), worker()]);
   if (!buildings.length) throw new Error(`PLATEAU タイルを解析できませんでした（失敗 ${failed}件）`);
-  return { buildings, tilesetUrl: ts.url, tiles: contents.length, failedTiles: failed };
+  // 利用した自治体データ（URL に自治体名・年度が含まれる）
+  const datasets = [...new Set(used.map((u) => decodeURIComponent(u.split('/').slice(-2, -1)[0] || u)))];
+  return { buildings, tilesetUrl: ts.url, datasets, tiles: contents.length, failedTiles: failed };
 }

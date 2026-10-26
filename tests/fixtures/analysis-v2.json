@@ -1,0 +1,478 @@
+{
+  "format": "walk-room-floorplan/2",
+  "images": [
+    {
+      "index": 1,
+      "role": "floorplan",
+      "content": "TEST 間取り図"
+    },
+    {
+      "index": 2,
+      "role": "overview",
+      "content": "TEST 物件概要"
+    }
+  ],
+  "consistency": {
+    "sameProperty": true,
+    "notes": null
+  },
+  "property": {
+    "name": {
+      "value": "テスト用マンション",
+      "source": "image",
+      "evidence": "画像2 上部"
+    },
+    "unit": {
+      "value": "101",
+      "source": "image",
+      "evidence": "画像1 右上"
+    },
+    "address": {
+      "value": null,
+      "source": null,
+      "evidence": "住所の記載なし"
+    },
+    "floor": {
+      "value": 3,
+      "source": "image",
+      "evidence": "画像2"
+    },
+    "areaM2": {
+      "value": 45,
+      "source": "image",
+      "evidence": "画像1 右下"
+    },
+    "layout": {
+      "value": "1LDK",
+      "source": "image",
+      "evidence": "画像1"
+    },
+    "orientation": {
+      "value": "南",
+      "source": "image",
+      "evidence": "画像1 方位記号"
+    },
+    "buildingFloors": {
+      "value": 6,
+      "source": "image",
+      "evidence": "画像2"
+    },
+    "stations": {
+      "value": [
+        {
+          "name": "テスト駅",
+          "line": "テスト線",
+          "walkMin": 7
+        }
+      ],
+      "source": "image",
+      "evidence": "画像2 交通"
+    }
+  },
+  "drawing": {
+    "units": "m",
+    "scale": {
+      "method": "area",
+      "source": "estimated",
+      "evidence": "TEST"
+    },
+    "north": {
+      "imageUpBearingDeg": null,
+      "source": null,
+      "evidence": null
+    },
+    "imageBox": {
+      "imageIndex": 1,
+      "box": [
+        0.1,
+        0.1,
+        0.9,
+        0.9
+      ]
+    }
+  },
+  "outline": [
+    [
+      0,
+      0
+    ],
+    [
+      6.4,
+      0
+    ],
+    [
+      6.4,
+      6.6
+    ],
+    [
+      0,
+      6.6
+    ]
+  ],
+  "rooms": [
+    {
+      "id": "ld",
+      "name": "LD",
+      "type": "living",
+      "area": {
+        "value": "12帖",
+        "source": "image"
+      },
+      "poly": [
+        [
+          0,
+          0
+        ],
+        [
+          6.4,
+          0
+        ],
+        [
+          6.4,
+          3.6
+        ],
+        [
+          0,
+          3.6
+        ]
+      ]
+    },
+    {
+      "id": "hall",
+      "name": "廊下",
+      "type": "hall",
+      "poly": [
+        [
+          0,
+          3.6
+        ],
+        [
+          1.6,
+          3.6
+        ],
+        [
+          1.6,
+          6.6
+        ],
+        [
+          0,
+          6.6
+        ]
+      ]
+    },
+    {
+      "id": "wash",
+      "name": "洗面・浴室",
+      "type": "washroom",
+      "poly": [
+        [
+          1.6,
+          3.6
+        ],
+        [
+          3.6,
+          3.6
+        ],
+        [
+          3.6,
+          6.6
+        ],
+        [
+          1.6,
+          6.6
+        ]
+      ]
+    },
+    {
+      "id": "br",
+      "name": "洋室",
+      "type": "bedroom",
+      "area": {
+        "value": "6帖",
+        "source": "image"
+      },
+      "poly": [
+        [
+          3.6,
+          3.6
+        ],
+        [
+          6.4,
+          3.6
+        ],
+        [
+          6.4,
+          6.6
+        ],
+        [
+          3.6,
+          6.6
+        ]
+      ]
+    }
+  ],
+  "walls": [
+    {
+      "id": "w1",
+      "a": [
+        0,
+        0
+      ],
+      "b": [
+        6.4,
+        0
+      ],
+      "exterior": true,
+      "thickness": {
+        "value": 0.18,
+        "source": "estimated"
+      },
+      "openings": [
+        {
+          "type": "window_door",
+          "at": 3.2,
+          "width": 1.8
+        }
+      ]
+    },
+    {
+      "id": "w2",
+      "a": [
+        6.4,
+        0
+      ],
+      "b": [
+        6.4,
+        6.6
+      ],
+      "exterior": true,
+      "thickness": 0.18,
+      "openings": [
+        {
+          "type": "window",
+          "at": 1.8,
+          "width": 1.2
+        }
+      ]
+    },
+    {
+      "id": "w3",
+      "a": [
+        6.4,
+        6.6
+      ],
+      "b": [
+        0,
+        6.6
+      ],
+      "exterior": true,
+      "thickness": 0.18,
+      "openings": [
+        {
+          "type": "door",
+          "at": 5.6,
+          "width": 0.8
+        }
+      ]
+    },
+    {
+      "id": "w4",
+      "a": [
+        0,
+        6.6
+      ],
+      "b": [
+        0,
+        0
+      ],
+      "exterior": true,
+      "thickness": 0.18,
+      "openings": [
+        {
+          "type": "window",
+          "at": 4.9,
+          "width": 1
+        }
+      ]
+    },
+    {
+      "id": "w5",
+      "a": [
+        0,
+        3.6
+      ],
+      "b": [
+        6.4,
+        3.6
+      ],
+      "thickness": 0.1,
+      "openings": [
+        {
+          "type": "door",
+          "at": 1,
+          "width": 0.8
+        },
+        {
+          "type": "door",
+          "at": 5,
+          "width": 0.8
+        }
+      ]
+    },
+    {
+      "id": "w6",
+      "a": [
+        1.6,
+        3.6
+      ],
+      "b": [
+        1.6,
+        6.6
+      ],
+      "thickness": 0.1,
+      "openings": [
+        {
+          "type": "sliding",
+          "at": 1.5,
+          "width": 0.7
+        }
+      ]
+    },
+    {
+      "id": "w7",
+      "a": [
+        3.6,
+        3.6
+      ],
+      "b": [
+        3.6,
+        6.6
+      ],
+      "thickness": 0.1,
+      "openings": []
+    }
+  ],
+  "fixtures": [
+    {
+      "type": "kitchen",
+      "label": "キッチン",
+      "poly": [
+        [
+          4.6,
+          2.9
+        ],
+        [
+          6.3,
+          2.9
+        ],
+        [
+          6.3,
+          3.5
+        ],
+        [
+          4.6,
+          3.5
+        ]
+      ]
+    },
+    {
+      "type": "ps",
+      "label": "PS",
+      "poly": [
+        [
+          1.65,
+          6.2
+        ],
+        [
+          2,
+          6.2
+        ],
+        [
+          2,
+          6.55
+        ],
+        [
+          1.65,
+          6.55
+        ]
+      ]
+    }
+  ],
+  "balconies": [
+    {
+      "poly": [
+        [
+          0,
+          -1.2
+        ],
+        [
+          6.4,
+          -1.2
+        ],
+        [
+          6.4,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ]
+    }
+  ],
+  "furniture": [],
+  "connections": [
+    [
+      "hall",
+      "ld"
+    ],
+    [
+      "ld",
+      "br"
+    ],
+    [
+      "hall",
+      "wash"
+    ]
+  ],
+  "entrance": {
+    "at": [
+      0.8,
+      6.1
+    ],
+    "source": "image"
+  },
+  "spawn": {
+    "at": [
+      3.2,
+      1.8
+    ],
+    "lookAt": [
+      3.2,
+      0
+    ]
+  },
+  "heights": {
+    "ceiling": {
+      "value": 2.4,
+      "source": "estimated"
+    }
+  },
+  "dimensions": [
+    {
+      "label": "全体幅",
+      "value": 6.4,
+      "source": "estimated",
+      "evidence": "TEST"
+    }
+  ],
+  "checks": {
+    "roomsInsideOutline": true,
+    "noOverlap": true,
+    "openingsOnWalls": true,
+    "reachableFromEntrance": true,
+    "areaConsistent": true
+  },
+  "uncertain": [],
+  "toConfirm": []
+}

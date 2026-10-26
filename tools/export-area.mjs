@@ -2,7 +2,9 @@
 // アプリと同じ処理をヘッドレスブラウザ内で実行するので、表示内容と同梱データが一致する。
 // 必要: Node.js 18+、Playwright（npm i -D playwright）、overpass-api.de・api.plateauview.mlit.go.jp・
 //       assets.cms.plateau.reearth.io への通信。
-// 使い方: node tools/export-area.mjs
+// 使い方: node tools/export-area.mjs <緯度> <経度> [建物の階数]
+//   例: node tools/export-area.mjs 35.57927 139.6556 6   （サンプル物件）
+//   アプリは data/manifest.json の bundled が true で、物件位置が一致するときだけ同梱データを使う。
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
@@ -27,7 +29,8 @@ const port = server.address().port;
 const browser = await chromium.launch();
 const page = await browser.newPage();
 page.on('console', (m) => console.log('[page]', m.text()));
-await page.goto(`http://localhost:${port}/index.html?export=1`);
+const [lat = '35.57927', lon = '139.6556', floors = ''] = process.argv.slice(2);
+await page.goto(`http://localhost:${port}/index.html?export=1&lat=${lat}&lon=${lon}&floors=${floors}`);
 await page.waitForFunction(() => window.__exportResult, null, { timeout: 10 * 60 * 1000 });
 const r = await page.evaluate(() => window.__exportResult);
 await browser.close();

@@ -1,18 +1,21 @@
 // アプリ本体：モード（窓からの眺め／室内／屋外）、描画ループ、UI の結線
 import * as THREE from 'three';
 import {
-  PROPERTY, SOURCES, WALK_RADIUS, EYE_HEIGHT_DEFAULT, WALK_SPEED_DEFAULT, OUTDOOR_SPEED_DEFAULT, PLAYER_RADIUS,
-  WALK_M_PER_MIN, UNIT_PLACEMENT_DEFAULT, TARGET_ESTIMATE,
+  SOURCES, WALK_RADIUS, DATA_RADIUS, EYE_HEIGHT_DEFAULT, WALK_SPEED_DEFAULT, OUTDOOR_SPEED_DEFAULT, PLAYER_RADIUS,
+  WALK_M_PER_MIN, TARGET_ESTIMATE, GEOCODERS,
 } from './config.js';
-import { loadArea, clearCache, fetchFresh, frame } from './data/loader.js';
+import { loadArea, clearAreaCache, fetchFresh } from './data/loader.js';
 import { CAT_LABEL } from './data/osm.js';
 import { OutdoorNav, moveWithCollision } from './nav.js';
 import { buildCity, buildPoiMarkers, buildRouteLine, COLORS } from './world/city.js';
-import { computePlacement, buildInterior, yawLookingOut, FACADE_LABEL } from './world/interior.js';
+import { computePlacement, buildInterior, yawLookingOut, BEARINGS, bearingLabel } from './world/interior.js';
 import { Controls } from './ui/controls.js';
 import { Minimap } from './ui/minimap.js';
-import { closestOnSeg, fmtMeters, ringCentroid } from './geo.js';
-import { buildPrompt, extractJson, validatePlan, normalizePlan, loadStoredPlan, storePlan, clearStoredPlan, drawPlanPreview } from './plan/import.js';
+import { closestOnSeg, fmtMeters, ringCentroid, LocalFrame } from './geo.js';
+import { INFO_FIELDS, SOURCE_LABEL, fmtValue } from './plan/format.js';
+import { putProject } from './store.js';
+import { displayName, planOf, resolveFacing, migrateLegacy } from './project.js';
+import { initWizard, showHome, openProject } from './ui/wizard.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -22,7 +25,6 @@ const SETTINGS_KEY = 'walk-room-settings-v2';
 const defaults = {
   eye: EYE_HEIGHT_DEFAULT, speedIn: WALK_SPEED_DEFAULT, speedOut: OUTDOOR_SPEED_DEFAULT, view: 'eye',
   quality: 'normal', furniture: true, edges: true,
-  facade: UNIT_PLACEMENT_DEFAULT.facade, along: UNIT_PLACEMENT_DEFAULT.along, storyHeight: TARGET_ESTIMATE.storyHeight,
 };
 let settings = { ...defaults };
 try { Object.assign(settings, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')); } catch { /* noop */ }
@@ -32,7 +34,7 @@ const saveSettings = () => { try { localStorage.setItem(SETTINGS_KEY, JSON.strin
 const state = {
   mode: 'loading', // 'window' | 'indoor' | 'outdoor'
   pos: { x: 0, z: 0 }, yaw: 0, pitch: 0,
-  data: null, nav: null, plan: null, placement: null, interior: null,
+  project: null, data: null, nav: null, plan: null, placement: null, interior: null, facing: null,
   entrance: null, // {x,z,yaw,status:'osm'|'provisional'}
   filter: 'all', dest: null, route: null, routeFrom: null,
   lastBlockMsg: 0,
@@ -101,46 +103,68 @@ function fade(fn) {
   setTimeout(() => { fn(); requestAnimationFrame(() => f.classList.remove('on')); }, 260);
 }
 
-// ---- 読み込み ----
+// ---- 物件を開いて歩く ----
 let abortCtl = null;
-async function startLoading(force = false) {
+function emptyData(origin, note) {
+  return {
+    version: 2, origin, fetchedAt: null, walk: [], buildings: [], pois: [], target: null, excludedAtTarget: [],
+    sources: { osm: { ok: false }, plateau: { ok: false } }, notes: note ? [note] : [], loadedFrom: 'none',
+    frame: new LocalFrame(origin.lat, origin.lon),
+  };
+}
+
+async function openWalk(project) {
+  state.project = project;
+  state.mode = 'loading';
+  state.dest = null;
+  for (const id of ['topbar', 'notices', 'minimap', 'bottombar']) $(id).hidden = true;
+  $('start').hidden = false;
+  $('start-title').textContent = displayName(project);
+  $('btn-start').disabled = true;
+  $('btn-skip').hidden = true;
   $('load-error').hidden = true;
   $('load-status').hidden = false;
   $('load-status').classList.remove('done');
-  $('btn-start').disabled = true;
+  const loc = project.location?.confirmed && project.location.forAddress === project.info?.address?.value ? project.location : null;
+  const plan = planOf(project);
+  if (!loc) {
+    setupWorld(emptyData({ lat: 0, lon: 0 }, '物件の位置が確定していないため、周辺の街は表示していません。'), plan);
+    $('load-text').textContent = plan ? '位置が未確定のため、室内だけを表示します' : '間取りも位置もまだありません';
+    $('load-status').classList.add('done');
+    $('btn-start').disabled = !plan;
+    return;
+  }
   abortCtl?.abort();
   abortCtl = new AbortController();
+  $('load-text').textContent = '周辺データを準備中…';
+  if (plan) $('btn-skip').hidden = false;
   try {
-    if (force) await clearCache();
-    const data = await loadArea({ force, signal: abortCtl.signal, onProgress: (m) => ($('load-text').textContent = m) });
-    // 間取り：端末で取り込んだもの → リポジトリの data/unit-312.json の順
-    let plan = loadStoredPlan(PROPERTY);
-    if (!plan) {
-      try {
-        const r = await fetch('data/unit-312.json', { cache: 'no-cache' });
-        if (r.ok) plan = await r.json();
-      } catch { /* 間取りなしで続行 */ }
-    }
+    const data = await loadArea({ lat: loc.lat, lon: loc.lon }, project.info, { signal: abortCtl.signal, onProgress: (m) => ($('load-text').textContent = m) });
+    if (state.project !== project) return;
     setupWorld(data, plan);
     const from = { bundled: '同梱データ', cache: '端末に保存済みのデータ', fresh: '公開データから取得' }[data.loadedFrom];
     $('load-text').textContent = `準備完了（${from}・取得日 ${data.fetchedAt.slice(0, 10)}）`;
     $('load-status').classList.add('done');
     $('btn-start').disabled = false;
+    $('btn-skip').hidden = true;
   } catch (e) {
     if (e.name === 'AbortError') return;
     console.error(e);
     $('load-status').hidden = true;
     $('load-error').hidden = false;
-    $('load-error-text').textContent = e.message || 'データを取得できませんでした。';
+    $('load-error-text').textContent = (e.message || 'データを取得できませんでした。') + ' 通信状況を確認して再試行してください。' + (plan ? '室内だけ先に見ることもできます。' : '');
     $('load-error-detail').textContent = [e.cause?.message, ...(e.details || [])].filter(Boolean).join('\n') || String(e);
+    setupWorld(emptyData({ lat: loc.lat, lon: loc.lon }, '周辺データを取得できなかったため、街は表示していません。'), plan);
+    $('btn-start').disabled = !plan;
   }
 }
 
 function setupWorld(data, plan) {
   // 再読み込み時は作り直す
-  if (city) { scene.remove(city.group); scene.remove(poiMarkers.group); scene.remove(routeLine.mesh); }
+  if (city) { scene.remove(city.group); scene.remove(city.target); scene.remove(poiMarkers.group); scene.remove(routeLine.mesh); }
   if (state.interior) { scene.remove(state.interior.group); state.interior = null; }
   state.data = data;
+  state.frame = data.frame;
   state.nav = new OutdoorNav(data);
   city = buildCity(scene, data);
   city.edgesGroup.visible = settings.edges;
@@ -148,15 +172,10 @@ function setupWorld(data, plan) {
   routeLine = buildRouteLine(scene);
   if (!avatar) avatar = buildAvatar();
   minimap = new Minimap($('minimap'), data);
-  setPlan(plan);
-  state.entrance = computeEntrance();
+  state.plan = plan;
+  state.entrance = data.walk.length ? computeEntrance() : null;
   rebuildPlacement();
   applyFilter();
-}
-
-function setPlan(plan) {
-  state.plan = plan && plan.status !== 'pending' && Array.isArray(plan.walls) && plan.walls.length ? plan : null;
-  state.planSource = !state.plan ? null : plan.importedFrom === 'claude-paste' ? 'device' : 'repo';
 }
 
 // 俯瞰視点で現在地を示す人型（身長1.7m。周囲の建物の大きさの目安）
@@ -176,18 +195,19 @@ function buildAvatar() {
 // 建物入口：OSM の entrance ノードがあれば使う。なければ道路側の仮位置。
 function computeEntrance() {
   const { data, nav } = state;
-  if (!data.target) {
-    const p = nav.nearestOnRoad(0, 0, 400);
-    return p ? { x: p.x, z: p.z, yaw: 0, status: 'none' } : { x: 0, z: 0, yaw: 0, status: 'none' };
-  }
-  const ring = data.target.ring;
-  const [cx, cz] = ringCentroid(ring);
+  // 1) 利用者が地図で置いた入口ピン 2) OSM の入口ノード 3) 建物に最も近い道路上の仮位置
+  const ue = state.project?.entrance;
   let from = null, status = 'provisional';
-  const ent = data.target.entrances || [];
-  if (ent.length) {
-    from = ent.find((e) => e.kind === 'main') || ent[0];
+  if (ue) {
+    const q = state.frame.toXZ(ue.lat, ue.lon);
+    from = { x: q.x, z: q.z };
+    status = 'user';
+  } else if (data.target?.entrances?.length) {
+    from = data.target.entrances.find((e) => e.kind === 'main') || data.target.entrances[0];
     status = 'osm';
   }
+  const ring = data.target ? data.target.ring : [[0, 0], [0.01, 0], [0, 0.01]];
+  const [cx, cz] = data.target ? ringCentroid(ring) : [0, 0];
   let best = null;
   if (from) {
     best = nav.nearestOnRoad(from.x, from.z, 200);
@@ -201,7 +221,7 @@ function computeEntrance() {
       }
     }
   }
-  if (!best) return { x: cx, z: cz + 30, yaw: 0, status: 'none' };
+  if (!best) return null;
   // 埋まらない位置を探す（線分に沿って少しずつずらす）
   let pt = { x: best.x, z: best.z };
   if (state.nav.blockReason(pt.x, pt.z, PLAYER_RADIUS + 0.1)) {
@@ -221,10 +241,12 @@ function computeEntrance() {
 
 function rebuildPlacement() {
   if (state.interior) { scene.remove(state.interior.group); state.interior = null; }
-  state.placement = state.data.target
-    ? computePlacement(state.data.target.ring, { floor: UNIT_PLACEMENT_DEFAULT.floor, facade: settings.facade, along: settings.along }, settings.storyHeight)
-    : null;
-  if (state.plan && state.placement) {
+  const p = state.project;
+  state.facing = resolveFacing(p, state.plan);
+  state.placement = computePlacement(state.data.target ? state.data.target.ring : null, {
+    bearing: state.facing.bearing, along: p.placement?.along ?? 0.5, floor: p.info?.floor?.value, storyHeight: p.placement?.storyHeight,
+  });
+  if (state.plan) {
     state.interior = buildInterior(scene, state.plan, state.placement);
     state.interior.setFurniture(settings.furniture);
     state.interior.group.visible = false;
@@ -233,10 +255,6 @@ function rebuildPlacement() {
 
 // ---- モード切り替え ----
 function enterRoom() {
-  if (!state.placement) {
-    toast('対象建物の外形が取得できないため、部屋の位置を表示できません。');
-    return enterOutdoor();
-  }
   if (state.interior) {
     state.mode = 'indoor';
     state.interior.group.visible = true;
@@ -255,6 +273,10 @@ function enterRoom() {
 }
 
 function enterOutdoor() {
+  if (!state.entrance) {
+    toast('周辺の道路データが無いため、屋外には出られません。', 4000);
+    return;
+  }
   state.mode = 'outdoor';
   if (state.interior) state.interior.group.visible = false;
   if (city.target) city.target.visible = true;
@@ -264,6 +286,7 @@ function enterOutdoor() {
   state.routeFrom = null;
   updateModeUi();
   if (state.entrance.status === 'provisional') toast('建物入口の位置は未確認のため、道路側の仮位置に出ました。', 4000);
+  else if (state.entrance.status === 'user') toast('地図で指定した建物入口の近くの道路に出ました。', 3000);
 }
 
 function resetPosition() {
@@ -282,7 +305,7 @@ function updateModeUi() {
   const m = state.mode;
   $('mode-chip').textContent = { outdoor: '屋外', indoor: '室内', window: '窓から見る' }[m] || '';
   $('btn-room').hidden = m !== 'outdoor';
-  $('btn-action').hidden = m === 'outdoor';
+  $('btn-action').hidden = m === 'outdoor' || !state.entrance;
   $('btn-action').textContent = '建物の外へ';
   $('btn-plan').hidden = m !== 'window';
   $('btn-reset').hidden = m === 'window';
@@ -301,14 +324,15 @@ function updateNotices() {
   const chips = [];
   if (m === 'outdoor') {
     chips.push(['地形は簡略化（平坦）', 'est']);
-    if (d.target) chips.push(['対象建物の高さは概算', 'est']);
-    if (state.entrance.status !== 'osm') chips.push(['建物入口は仮位置', 'est']);
-    if (!d.sources.plateau.ok) chips.push(['建物はOSM外形・高さ推定', 'miss']);
+    if (d.target && d.target.hStatus !== 'plateau') chips.push(['対象建物の高さは推定', 'est']);
+    if (state.entrance && state.entrance.status === 'provisional') chips.push(['建物入口は仮位置', 'est']);
+    if (!d.sources.plateau.ok) chips.push([d.sources.plateau.outOfArea ? 'PLATEAU対象外・建物高さ推定' : '建物はOSM外形・高さ推定', 'miss']);
   } else {
-    chips.push(['住戸位置は仮配置', 'est']);
-    chips.push([`高さ推定（階高${settings.storyHeight.toFixed(1)}m）`, 'est']);
-    if (m === 'window') chips.push(['間取り図未取得・室内は保留', 'miss']);
-    if (m === 'indoor' && state.planSource === 'device') chips.push(['間取りはClaude読み取り（寸法推定）', 'est']);
+    chips.push(['住戸の位置・向きは仮配置', 'est']);
+    if (!state.placement.floorKnown) chips.push(['所在階が不明（1階として表示）', 'miss']);
+    if (m === 'window') chips.push(['間取り未取り込み', 'miss']);
+    if (m === 'indoor') chips.push(['間取りはClaude読み取り（寸法推定）', 'est']);
+    if (!d.walk.length && !d.buildings.length) chips.push(['周辺の街は未表示', 'miss']);
   }
   $('notices').innerHTML = chips.map(([t, c]) => `<span class="chip ${c}">${esc(t)}</span>`).join('');
 }
@@ -323,7 +347,10 @@ function setDest(poi) {
 }
 
 function routeStart() {
-  return state.mode === 'outdoor' ? state.pos : state.entrance;
+  return state.mode === 'outdoor' || !state.entrance ? state.pos : state.entrance;
+}
+function entranceLabel() {
+  return { user: '建物入口（地図で指定）', osm: '建物入口', provisional: '建物入口（仮位置）' }[state.entrance?.status] || '建物入口';
 }
 function destPoint(p) {
   if (p.entrances && p.entrances.length) {
@@ -356,7 +383,7 @@ function updateDestHud(textToo = false) {
     $('dest-name').textContent = p.name;
     $('dest-straight').textContent = `直線距離 ${fmtMeters(Math.hypot(dx, dz))}（現在地から）`;
     const r = state.route;
-    const fromLabel = state.mode === 'outdoor' ? '現在地から' : `建物入口${state.entrance.status === 'osm' ? '' : '（仮位置）'}から`;
+    const fromLabel = state.mode === 'outdoor' ? '現在地から' : `${entranceLabel()}から`;
     if (r && r.reliable) {
       $('dest-walk').textContent = `徒歩 ${fmtMeters(r.dist)}・約${Math.max(1, Math.ceil(r.dist / WALK_M_PER_MIN))}分（${fromLabel}・道路経路）`;
     } else {
@@ -403,9 +430,9 @@ function showPoi(p) {
   const d = Math.hypot(p.x - state.pos.x, p.z - state.pos.z);
   const isDest = state.dest?.id === p.id;
   // 建物入口からの道路経路
-  const r = state.nav.route(state.entrance, destPoint(p));
+  const r = state.entrance ? state.nav.route(state.entrance, destPoint(p)) : null;
   const walk = r && r.reliable
-    ? `${fmtMeters(r.dist)}・約${Math.max(1, Math.ceil(r.dist / WALK_M_PER_MIN))}分 <span class="note">（建物入口${state.entrance.status === 'osm' ? '' : '仮位置'}から道路経路、${WALK_M_PER_MIN}m/分で換算。信号待ちは含まず）</span>`
+    ? `${fmtMeters(r.dist)}・約${Math.max(1, Math.ceil(r.dist / WALK_M_PER_MIN))}分 <span class="note">（${entranceLabel()}から道路経路、${WALK_M_PER_MIN}m/分で換算。信号待ちは含まず）</span>`
     : '<span class="note">道路網で経路を計算できないため表示しません</span>';
   const ents = p.entrances?.length
     ? p.entrances.map((e) => esc(e.label)).join('、') + ' <span class="note">（OSMの入口ノード）</span>'
@@ -434,194 +461,124 @@ function showPoi(p) {
   });
 }
 
-// ---- 間取りの取り込み（Claude で読み取った JSON を貼り付け） ----
-function showPlanImport() {
-  const prompt = buildPrompt(PROPERTY);
-  const has = state.planSource === 'device';
-  const html = `
-    <p>間取り図の画像を Claude に読み取らせ、結果を貼り付けると室内を作ります（このアプリは AI に直接つながりません）。</p>
-    <h3>1. 指示文をコピーして Claude を開く</h3>
-    <div class="row"><a id="pi-open" class="btn primary" href="https://claude.ai/new" target="_blank" rel="noopener">指示文をコピーして Claude を開く</a></div>
-    <p class="note">Claude で指示文を貼り付け、間取り図の画像を添付して送信します。コピーできない場合は下の指示文を長押しで選択してください。</p>
-    <details><summary>指示文を表示</summary><textarea id="pi-prompt" class="mono" rows="8" readonly>${esc(prompt)}</textarea>
-      <div class="row"><button type="button" id="pi-copy">指示文をコピー</button></div></details>
-    <h3>2. Claude の回答を貼り付ける</h3>
-    <textarea id="pi-input" class="mono" rows="6" placeholder="Claude の回答（JSON のコードブロック）をここに貼り付け"></textarea>
-    <div class="row"><button type="button" id="pi-paste">クリップボードから貼り付け</button><button type="button" id="pi-check" class="primary">内容を確認</button></div>
-    <div id="pi-result"></div>
-    ${has ? `<h3>取り込み済みの間取り</h3><p class="note">この端末に保存されています（${esc((state.plan.importedAt || '').slice(0, 10))}）。他の端末でも使うには JSON をコピーして開発者に渡し、data/unit-312.json に反映してください。</p>
-      <div class="row"><button type="button" id="pi-export">JSONをコピー</button><button type="button" id="pi-delete">取り込んだ間取りを削除</button></div>` : ''}`;
-  openPanel('間取りを取り込む', html, (el) => {
-    const copy = async (text) => {
-      try { await navigator.clipboard.writeText(text); toast('コピーしました'); return true; } catch {
-        const ta = el.querySelector('#pi-prompt');
-        ta.closest('details').open = true; ta.focus(); ta.select();
-        toast('自動でコピーできませんでした。選択された指示文をコピーしてください', 4000);
-        return false;
-      }
-    };
-    el.querySelector('#pi-open').addEventListener('click', () => { copy(prompt); });
-    el.querySelector('#pi-copy').addEventListener('click', () => copy(prompt));
-    el.querySelector('#pi-paste').addEventListener('click', async () => {
-      try { el.querySelector('#pi-input').value = await navigator.clipboard.readText(); } catch { toast('貼り付けできませんでした。入力欄を長押しして「ペースト」してください', 4000); }
-    });
-    el.querySelector('#pi-check').addEventListener('click', () => checkPlanInput(el));
-    el.querySelector('#pi-export')?.addEventListener('click', () => copy(JSON.stringify(state.plan, null, 2)));
-    el.querySelector('#pi-delete')?.addEventListener('click', () => {
-      clearStoredPlan(PROPERTY);
-      reloadPlan(null);
-      closePanel();
-      toast('取り込んだ間取りを削除しました');
-    });
-  });
-}
-
-function checkPlanInput(el) {
-  const out = el.querySelector('#pi-result');
-  let plan;
-  try { plan = extractJson(el.querySelector('#pi-input').value); } catch (e) {
-    out.innerHTML = `<p class="error">${esc(e.message)}</p>`;
-    return;
-  }
-  const v = validatePlan(plan, PROPERTY);
-  const list = (arr, cls) => arr.length ? `<ul class="${cls}">${arr.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
-  const ds = plan.dimensionStatus && typeof plan.dimensionStatus === 'object'
-    ? `<dl class="kv">${Object.entries(plan.dimensionStatus).map(([k, val]) => `<dt>${esc(k)}</dt><dd>${esc(val)}</dd>`).join('')}</dl>` : '';
-  out.innerHTML = `
-    <h3>3. 元の間取り図と見比べる</h3>
-    ${v.errors.length ? `<p class="error">取り込めません。Claude に次の点を伝えて直してもらってください。</p>${list(v.errors, 'error')}` : ''}
-    ${v.warnings.length ? `<p class="warn">確認してください</p>${list(v.warnings, 'warn')}` : ''}
-    ${!v.errors.length ? `<canvas id="pi-preview" class="plan-preview"></canvas>
-      <p class="note">外周の面積 ${v.area.toFixed(2)}㎡（専有面積 ${PROPERTY.unitInfo.areaM2}㎡ は壁芯のため、室内側は1割ほど小さくなるのが普通です）。寸法は推定として扱います。</p>
-      ${ds}
-      <div class="row"><button type="button" id="pi-apply" class="primary">この内容で室内を作る</button></div>` : ''}`;
-  if (v.errors.length) return;
-  drawPlanPreview(out.querySelector('#pi-preview'), plan);
-  out.querySelector('#pi-apply').addEventListener('click', () => {
-    const np = normalizePlan(plan, PROPERTY);
-    if (!storePlan(PROPERTY, np)) toast('この端末に保存できませんでした（表示中のみ有効）', 4000);
-    reloadPlan(np);
-    closePanel();
-    fade(enterRoom);
-    toast('室内を作りました。寸法は推定を含みます', 4000);
-  });
-}
-
-async function reloadPlan(plan) {
-  if (!plan) {
-    try { const r = await fetch('data/unit-312.json', { cache: 'no-cache' }); if (r.ok) plan = await r.json(); } catch { /* noop */ }
-  }
-  setPlan(plan);
-  const inRoom = state.mode === 'indoor' || state.mode === 'window';
-  rebuildPlacement();
-  if (inRoom) enterRoom();
+// 手順画面へ戻る
+function backToWizard(step) {
+  closePanel();
+  controls.stopAll();
+  state.mode = 'loading';
+  for (const id of ['topbar', 'notices', 'minimap', 'bottombar', 'dest-hud']) $(id).hidden = true;
+  if (step === 'home') showHome(); else openProject(state.project.id, step);
 }
 
 const STATUS = { confirmed: ['確認済', 'ok'], estimated: ['推定', 'est'], missing: ['未取得', 'miss'] };
 function showData() {
-  const d = state.data;
+  const d = state.data, p = state.project;
   const pl = d.sources.plateau;
   const fact = (label, value, st, src) => `<li><span class="chip ${STATUS[st][1]}">${STATUS[st][0]}</span><div><strong>${esc(label)}</strong>：${esc(value)}${src ? `<small>${esc(src)}</small>` : ''}</div></li>`;
-  const facts = PROPERTY.facts.map((f) => fact(f.label, f.value, f.status, f.src));
+  const infoCls = { image: 'ok', user: 'ok', listing: 'ok', estimated: 'est' };
+  const info = INFO_FIELDS.map(([k, label]) => {
+    const f = p.info?.[k] || {};
+    const has = f.value != null && f.value !== '';
+    const src = has ? f.source || 'estimated' : null;
+    return `<li><span class="chip ${infoCls[src] || 'miss'}">${SOURCE_LABEL[src] || SOURCE_LABEL.null}</span><div><strong>${label}</strong>：${has ? esc(fmtValue(k, f.value)) : '—'}${f.evidence ? `<small>${esc(f.evidence)}</small>` : ''}</div></li>`;
+  });
+  const loc = p.location;
   const ex = d.excludedAtTarget || [];
+  const t = d.target;
+  const tH = !t ? null : t.hStatus === 'plateau' ? `約${t.h.toFixed(1)}m（PLATEAU の実データ）` : t.hStatus === 'osm-height' ? `約${t.h.toFixed(1)}m（OSM の height タグ）` : t.hStatus === 'estimated' ? `約${t.h.toFixed(1)}m（${t.floors}階×階高${TARGET_ESTIMATE.storyHeight}m などの概算）` : `${t.h}m（階数不明のため仮置き）`;
   const html = `
     <h3>物件情報</h3>
-    <ul class="facts">${facts.join('')}</ul>
-    <h3>表示データの状態</h3>
+    <ul class="facts">${info.join('')}</ul>
+    <h3>位置と配置</h3>
     <ul class="facts">
-      ${fact('読み込み元', { bundled: '同梱データ', cache: '端末内に保存したデータ', fresh: '公開データから取得' }[d.loadedFrom] + `（取得日時 ${d.fetchedAt.replace('T', ' ').slice(0, 16)} UTC）`, 'confirmed')}
-      ${pl.ok ? fact('建物の形状・高さ', `PLATEAU 川崎市 ${SOURCES.plateau.year}年度 LOD1：${pl.count}棟（タイル${pl.tiles}件${pl.failedTiles ? `、失敗${pl.failedTiles}件` : ''}）`, 'confirmed', pl.tilesetUrl)
-        : fact('建物の形状・高さ', `PLATEAU を取得できませんでした（${pl.error || '原因不明'}）。OSM の建物外形で代用（高さは階数×3m などの推定）`, 'missing', (pl.details || []).join(' / '))}
-      ${d.target ? fact('対象建物の外形', `OpenStreetMap way ${d.target.osmId}`, 'confirmed') : fact('対象建物の外形', '取得できませんでした', 'missing')}
-      ${d.target ? fact('対象建物の高さ', `約${d.target.h.toFixed(1)}m（${d.target.floors}階×階高${TARGET_ESTIMATE.storyHeight}m＋1階床${TARGET_ESTIMATE.groundFloorRaise}m＋屋上${TARGET_ESTIMATE.parapet}m の概算）`, 'estimated') : ''}
-      ${fact('対象敷地に重なる既存データ', ex.length ? `${ex.length}件を非表示（${ex.map((e) => `${e.src} 高さ${e.h}m・${e.area}㎡`).join('、')}）。竣工（2022年11月）前の調査による旧建物・工事中形状の可能性があるため` : 'なし（PLATEAU 2022年度に対象建物の形状は見つかりませんでした）', ex.length ? 'estimated' : 'confirmed')}
-      ${fact('建物入口', state.entrance.status === 'osm' ? 'OSM の入口ノード付近の道路' : '未確認（建物に最も近い道路上の仮位置）', state.entrance.status === 'osm' ? 'confirmed' : 'estimated')}
-      ${fact('道路・歩道', `OSM の歩行可能な道路 ${d.walk.length}本。私道・通行制限のある道は除外。道路の幅は種別から推定`, 'estimated')}
-      ${fact('施設', `OSM のコンビニ・スーパー・駅 ${d.pois.length}件`, 'confirmed')}
+      ${loc?.confirmed ? fact('物件の位置', `${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}（${loc.label || ''}）`, 'confirmed', `${loc.provider === 'manual' ? '地図で指定' : loc.provider === 'preset' ? 'サンプルの既定値' : (GEOCODERS[loc.provider]?.label || '') + 'の候補から選択'}・${loc.precision?.label || ''}`) : fact('物件の位置', '未確定', 'missing')}
+      ${fact('建物入口', { user: '地図で指定した位置の近くの道路', osm: 'OSM の入口ノード付近の道路', provisional: '未確認（建物に最も近い道路上の仮位置）' }[state.entrance?.status] || '道路データなし', state.entrance?.status === 'provisional' || !state.entrance ? 'estimated' : 'confirmed')}
+      ${fact('住戸の向き', `${bearingLabel(state.facing.bearing)}向きとして配置（${state.facing.basis}）`, state.facing.status === 'image' || state.facing.status === 'user' ? 'confirmed' : 'estimated')}
+      ${fact('住戸の建物内の位置・高さ', `仮配置：外壁上の${Math.round((p.placement?.along ?? 0.5) * 100)}%、${state.placement.floorKnown ? `${p.info.floor.value}階` : '所在階不明（1階）'}・階高${(p.placement?.storyHeight ?? 3).toFixed(2)}m（推定）`, 'estimated')}
+    </ul>
+    <h3>周辺データ</h3>
+    <ul class="facts">
+      ${d.fetchedAt ? fact('読み込み元', { bundled: '同梱データ', cache: '端末内に保存したデータ', fresh: '公開データから取得' }[d.loadedFrom] + `（取得日時 ${d.fetchedAt.replace('T', ' ').slice(0, 16)} UTC・半径約${DATA_RADIUS}m）`, 'confirmed') : fact('周辺データ', '未取得', 'missing')}
+      ${d.fetchedAt ? (pl.ok ? fact('建物の形状・高さ', `PLATEAU LOD1：${pl.count}棟（${(pl.datasets || []).join('、') || '自治体名不明'}）`, 'confirmed', pl.tilesetUrl)
+        : fact('建物の形状・高さ', pl.outOfArea ? 'この地点は PLATEAU の整備範囲外。OSM の建物外形で代用（高さは階数×3m などの推定、不明なら7m）' : `PLATEAU を取得できませんでした（${pl.error || '原因不明'}）。OSM の建物外形で代用（高さは推定）`, 'missing', (pl.details || []).join(' / '))) : ''}
+      ${t ? fact('対象建物の外形', t.footprintSource === 'PLATEAU' ? 'PLATEAU（物件位置を含む建物）' : `OpenStreetMap way ${t.osmId}${t.containsPin ? '' : '（物件位置の近くの建物）'}`, t.containsPin === false ? 'estimated' : 'confirmed') : fact('対象建物の外形', 'なし（物件位置に住戸を仮配置）', 'missing')}
+      ${t ? fact('対象建物の高さ', tH, t.hStatus === 'plateau' ? 'confirmed' : 'estimated') : ''}
+      ${ex.length ? fact('対象敷地に重なる既存データ', `${ex.length}件を非表示（${ex.map((e) => `${e.src} 高さ${e.h}m・${e.area}㎡`).join('、')}）。建て替え前の形状などの可能性があるため`, 'estimated') : ''}
+      ${d.fetchedAt ? fact('道路・歩道', `OSM の歩行可能な道路 ${d.walk.length}本。私道・通行制限のある道は除外。道路の幅は種別から推定`, 'estimated') : ''}
+      ${d.fetchedAt ? fact('施設', `OSM のコンビニ・スーパー・駅 ${d.pois.length}件（駅は半径1.5kmまで）`, 'confirmed') : ''}
       ${fact('地形', '高低差は反映せず平坦として表示（地形は簡略化）', 'estimated')}
-      ${fact('間取り・室内', state.planSource === 'device' ? `この端末で取り込んだ間取り（Claude による読み取り、${esc((state.plan.importedAt || '').slice(0, 10))}）。寸法は推定を含む` : state.plan ? `data/unit-312.json（${esc(state.plan.status)}）` : '間取り図が未取得のため室内は保留。「窓からの眺め（推定）」のみ', state.plan ? 'estimated' : 'missing')}
     </ul>
     ${(d.notes || []).map((n) => `<p class="warn">${esc(n)}</p>`).join('')}
     <h3>出典</h3>
     <p>${esc(SOURCES.plateau.attribution)}<br><a href="${SOURCES.plateau.url}" target="_blank" rel="noopener">${SOURCES.plateau.url}</a></p>
-    <p>道路・店舗・駅・対象建物の外形：${esc(SOURCES.overpass.attribution)}<br><a href="${SOURCES.overpass.url}" target="_blank" rel="noopener">${SOURCES.overpass.url}</a></p>
-    <p>物件情報：三井の賃貸 掲載ページ（<a href="https://www.mitsui-chintai.co.jp/rf/tatemono/10355" target="_blank" rel="noopener">mitsui-chintai.co.jp/rf/tatemono/10355</a>）ほか。画像は転載していません。</p>
-    <p class="note">取得日：${d.fetchedAt.slice(0, 10)}。データは端末内に${30}日間保存されます。</p>
-    <div class="row"><button type="button" id="btn-refetch">データを再取得</button></div>`;
+    <p>道路・店舗・駅・建物外形：${esc(SOURCES.overpass.attribution)}<br><a href="${SOURCES.overpass.url}" target="_blank" rel="noopener">${SOURCES.overpass.url}</a></p>
+    <p>位置確認の地図：地理院タイル（国土地理院）<br><a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">https://maps.gsi.go.jp/development/ichiran.html</a></p>
+    ${loc?.provider && GEOCODERS[loc.provider] ? `<p>${esc(GEOCODERS[loc.provider].attribution)}</p>` : ''}
+    <p class="note">間取り・物件情報は利用者が登録した画像を Claude で読み取った結果です。画像は端末内にだけ保存しています。周辺データは端末内に30日間保存されます。</p>
+    ${d.fetchedAt ? '<div class="row"><button type="button" id="btn-refetch">周辺データを再取得</button></div>' : ''}`;
   openPanel('データと出典', html, (el) => {
-    el.querySelector('#btn-refetch').addEventListener('click', () => {
+    el.querySelector('#btn-refetch')?.addEventListener('click', async () => {
       closePanel();
-      $('start').hidden = false;
-      startLoading(true);
+      await clearAreaCache(d.origin);
+      openWalk(state.project);
     });
   });
 }
 
 function showSettings() {
+  const p = state.project;
   const seg = (name, val, opts) => `<div class="seg" data-seg="${name}">${opts.map(([v, l]) => `<button type="button" data-v="${v}" aria-pressed="${String(val) === String(v)}">${l}</button>`).join('')}</div>`;
+  const facade = p.placement?.facade ?? 'auto';
   const html = `
     <div class="setting"><label for="s-eye">目線の高さ <output id="o-eye">${settings.eye.toFixed(2)} m</output></label>
       <input id="s-eye" type="range" min="1.0" max="2.0" step="0.05" value="${settings.eye}">
       <span class="note">人の目の高さ（約1.6m）です。街全体の大きさをつかむには屋外の「俯瞰で見る」を使ってください。</span></div>
     <div class="setting"><label for="s-speedOut">屋外の移動速度 <output id="o-speedOut">${settings.speedOut.toFixed(1)} m/秒</output></label>
       <input id="s-speedOut" type="range" min="1" max="12" step="0.5" value="${settings.speedOut}">
-      <span class="note">実際の徒歩は約1.3m/秒（80m/分）。初期値はその約3倍です。徒歩時間の表示は速度に関係なく80m/分で計算します。</span></div>
+      <span class="note">実際の徒歩は約1.3m/秒（80m/分）。徒歩時間の表示は速度に関係なく80m/分で計算します。</span></div>
     <div class="setting"><label for="s-speedIn">室内の移動速度 <output id="o-speedIn">${settings.speedIn.toFixed(1)} m/秒</output></label>
       <input id="s-speedIn" type="range" min="0.5" max="2.5" step="0.1" value="${settings.speedIn}"></div>
     <div class="setting"><label>屋外の視点</label>${seg('view', settings.view, [['eye', '目線（人の高さ）'], ['bird', '俯瞰（上空から）']])}</div>
     <div class="setting"><label>画質（重い場合は「低」）</label>${seg('quality', settings.quality, [['low', '低'], ['normal', '標準'], ['high', '高']])}</div>
     <div class="setting"><label>建物の輪郭線</label>${seg('edges', settings.edges, [[true, '表示'], [false, '非表示']])}</div>
-    <div class="setting"><label>家具</label>${seg('furniture', settings.furniture, [[true, '表示'], [false, '非表示']])}
-      ${state.plan ? '' : '<span class="note">間取り図が未取得のため室内はまだありません。</span>'}</div>
-    <h3>間取り</h3>
-    <div class="row"><button type="button" id="s-plan">間取りを取り込む（Claude を利用）</button></div>
-    <h3>住戸の仮配置（未確認のため調整可能）</h3>
-    <p class="note">312号室の建物内の位置・向きは確認できていません。初期値は、同じ面積の1階住戸が「西向き」と掲載されていることからの推定です。</p>
-    <div class="setting"><label>窓の向き</label>${seg('facade', settings.facade, Object.entries(FACADE_LABEL))}</div>
-    <div class="setting"><label for="s-along">外壁上の位置 <output id="o-along">${Math.round(settings.along * 100)}%</output></label>
-      <input id="s-along" type="range" min="0.05" max="0.95" step="0.01" value="${settings.along}"></div>
-    <div class="setting"><label for="s-story">階高（推定） <output id="o-story">${settings.storyHeight.toFixed(2)} m</output></label>
-      <input id="s-story" type="range" min="2.7" max="3.6" step="0.05" value="${settings.storyHeight}">
-      <span class="note">3階の床の高さ ≒ 1階床${TARGET_ESTIMATE.groundFloorRaise}m＋階高×2。実測値ではありません。</span></div>
-    <div class="row"><button type="button" id="s-reset">初期値に戻す</button></div>`;
+    <div class="setting"><label>家具（解析データにある場合のみ）</label>${seg('furniture', settings.furniture, [[true, '表示'], [false, '非表示']])}</div>
+    <h3>住戸の仮配置（${esc(displayName(p))}）</h3>
+    <p class="note">住所の緯度経度だけでは、住戸の建物内の位置や窓の向きは決まりません。現在：${bearingLabel(state.facing.bearing)}向き（${esc(state.facing.basis)}）。</p>
+    <div class="setting"><label>窓の向き</label>${seg('facade', facade, [['auto', '自動'], ...BEARINGS.map(([b, l]) => [b, l])])}</div>
+    <div class="setting"><label for="s-along">外壁上の位置 <output id="o-along">${Math.round((p.placement?.along ?? 0.5) * 100)}%</output></label>
+      <input id="s-along" type="range" min="0.05" max="0.95" step="0.01" value="${p.placement?.along ?? 0.5}"></div>
+    <div class="setting"><label for="s-story">階高（推定） <output id="o-story">${(p.placement?.storyHeight ?? 3).toFixed(2)} m</output></label>
+      <input id="s-story" type="range" min="2.7" max="3.6" step="0.05" value="${p.placement?.storyHeight ?? 3}">
+      <span class="note">床の高さ ≒ 1階床${TARGET_ESTIMATE.groundFloorRaise}m＋階高×（所在階−1）。実測値ではありません。</span></div>
+    <h3>物件</h3>
+    <div class="row"><button type="button" id="s-edit">間取り・物件情報を確認・修正</button><button type="button" id="s-loc">位置を変更</button><button type="button" id="s-home">物件一覧へ</button></div>`;
   openPanel('設定', html, (el) => {
-    const bindRange = (id, key, fmt, after) => {
+    const replace = () => { const inRoom = state.mode !== 'outdoor'; rebuildPlacement(); if (inRoom) enterRoom(); updateNotices(); putProject(p); };
+    const bindRange = (id, fmt, set) => {
       const i = el.querySelector('#s-' + id);
-      i.addEventListener('input', () => {
-        settings[key] = parseFloat(i.value);
-        el.querySelector('#o-' + id).textContent = fmt(settings[key]);
-        saveSettings();
-        after?.();
-      });
+      i.addEventListener('input', () => { const v = parseFloat(i.value); el.querySelector('#o-' + id).textContent = fmt(v); set(v); });
     };
-    bindRange('eye', 'eye', (v) => `${v.toFixed(2)} m`);
-    bindRange('speedOut', 'speedOut', (v) => `${v.toFixed(1)} m/秒`);
-    bindRange('speedIn', 'speedIn', (v) => `${v.toFixed(1)} m/秒`);
-    const replace = () => { const inRoom = state.mode !== 'outdoor'; rebuildPlacement(); if (inRoom) enterRoom(); updateNotices(); };
-    bindRange('along', 'along', (v) => `${Math.round(v * 100)}%`, replace);
-    bindRange('story', 'storyHeight', (v) => `${v.toFixed(2)} m`, replace);
+    bindRange('eye', (v) => `${v.toFixed(2)} m`, (v) => { settings.eye = v; saveSettings(); });
+    bindRange('speedOut', (v) => `${v.toFixed(1)} m/秒`, (v) => { settings.speedOut = v; saveSettings(); });
+    bindRange('speedIn', (v) => `${v.toFixed(1)} m/秒`, (v) => { settings.speedIn = v; saveSettings(); });
+    bindRange('along', (v) => `${Math.round(v * 100)}%`, (v) => { p.placement.along = v; replace(); });
+    bindRange('story', (v) => `${v.toFixed(2)} m`, (v) => { p.placement.storyHeight = v; replace(); });
     el.querySelectorAll('[data-seg]').forEach((g) => g.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
       const k = g.dataset.seg;
       let v = b.dataset.v;
       if (v === 'true' || v === 'false') v = v === 'true';
+      g.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      if (k === 'facade') { p.placement.facade = v; replace(); showSettings(); return; }
       settings[k] = v;
       saveSettings();
-      g.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
       if (k === 'quality') { applyQuality(); resize(); }
       if (k === 'edges') city.edgesGroup.visible = v;
       if (k === 'furniture') state.interior?.setFurniture(v);
-      if (k === 'facade') replace();
       if (k === 'view') updateModeUi();
     })));
-    el.querySelector('#s-plan').addEventListener('click', showPlanImport);
-    el.querySelector('#s-reset').addEventListener('click', () => {
-      settings = { ...defaults };
-      saveSettings();
-      applyQuality(); resize();
-      city.edgesGroup.visible = settings.edges;
-      replace();
-      showSettings();
-    });
+    el.querySelector('#s-edit').addEventListener('click', () => backToWizard('review'));
+    el.querySelector('#s-loc').addEventListener('click', () => backToWizard('location'));
+    el.querySelector('#s-home').addEventListener('click', () => backToWizard('home'));
   });
 }
 
@@ -634,9 +591,10 @@ function showHelp() {
     <h3>パソコン</h3>
     <p>W A S D／矢印キーで移動、Q・E で向きを変える、マウスのドラッグで見回し。</p>
     <h3>流れ</h3>
-    <p>部屋（窓からの眺め）→「建物の外へ」で建物入口付近の道路へ →「施設」から目的地を選ぶと、方向・直線距離と、道路で経路を計算できた場合だけ徒歩距離を表示します。「部屋へ戻る」でいつでも戻れます。</p>
+    <p>物件の登録：画像を登録 → 依頼文をコピーして Claude に画像と一緒に渡す → 回答（JSON）を貼り付け → 2D 図と物件情報を確認 → 住所から位置を確定。<br>
+    室内 →（玄関に近づくと）「建物の外へ」で建物入口付近の道路へ →「施設」から目的地を選ぶと、方向・直線距離と、道路で経路を計算できた場合だけ徒歩距離を表示します。「部屋へ戻る」でいつでも戻れます。</p>
     <h3>表示について</h3>
-    <p>グレーの箱は PLATEAU の建物（位置・外形・高さ）、オレンジは対象建物（外形は OSM、高さは概算）です。白っぽい帯は歩ける道路（幅は推定）で、道路の外や建物の中には入れません。赤い円の外は範囲外です（中心から${WALK_RADIUS}m）。</p>
+    <p>グレーの箱は PLATEAU の建物（位置・外形・高さ）、オレンジは対象建物です（PLATEAU が無い場合は OSM の外形で、高さは推定）。白っぽい帯は歩ける道路（幅は推定）で、道路の外や建物の中には入れません。赤い円の外は範囲外です（中心から${WALK_RADIUS}m）。</p>
     <p>名札が薄く見えるときは、その施設が建物の向こう側にあります。</p>
     <p class="note">ミニマップをタップすると拡大します（拡大中に施設の点をタップすると詳細）。</p>`);
 }
@@ -710,30 +668,41 @@ function tick() {
 
 // ---- 起動 ----
 async function exportMode() {
-  // tools/export-area.mjs から呼ばれる：公開データを取得して JSON を返す
+  // tools/export-area.mjs から呼ばれる：?export=1&lat=..&lon=.. の位置の公開データを取得して JSON を返す
+  const q = new URLSearchParams(location.search);
+  const origin = { lat: parseFloat(q.get('lat')), lon: parseFloat(q.get('lon')) };
   try {
-    window.__exportResult = { ok: true, data: await fetchFresh({ onProgress: (m) => console.log(m) }) };
+    if (!isFinite(origin.lat) || !isFinite(origin.lon)) throw new Error('lat・lon を指定してください');
+    window.__exportResult = { ok: true, data: await fetchFresh(origin, { buildingFloors: { value: q.get('floors') ? +q.get('floors') : null } }, { onProgress: (m) => console.log(m) }) };
   } catch (e) {
     window.__exportResult = { ok: false, error: e.message, details: e.details || [], cause: e.cause?.message };
   }
 }
 
-function main() {
+function startWalking() {
+  $('start').hidden = true;
+  for (const id of ['topbar', 'notices', 'minimap', 'bottombar']) $(id).hidden = false;
+  $('title-name').textContent = state.project.info?.name?.value || '名称未入力';
+  $('title-unit').textContent = state.project.info?.unit?.value || '';
+  fade(() => enterRoom());
+}
+
+async function main() {
   if (new URLSearchParams(location.search).has('export')) { exportMode(); return; }
-  if (!webglAvailable()) { $('start').hidden = true; $('nowebgl').hidden = false; return; }
+  if (!webglAvailable()) { $('home').hidden = true; $('nowebgl').hidden = false; return; }
   initRenderer();
   controls = new Controls($('stage'), $('stick'), $('knob'));
   controls.onTap = onTap;
-  $('btn-retry').addEventListener('click', () => startLoading(false));
-  $('btn-start').addEventListener('click', () => {
-    $('start').hidden = true;
-    for (const id of ['topbar', 'notices', 'minimap', 'bottombar']) $(id).hidden = false;
-    fade(() => enterRoom());
-  });
+  initWizard({ onWalk: openWalk, toast });
+  $('btn-retry').addEventListener('click', () => openWalk(state.project));
+  $('btn-start').addEventListener('click', startWalking);
+  $('btn-skip').addEventListener('click', () => { abortCtl?.abort(); setupWorld(emptyData(state.project.location || { lat: 0, lon: 0 }, '周辺データの取得を中断したため、街は表示していません。'), planOf(state.project)); startWalking(); });
+  $('btn-back').addEventListener('click', () => { abortCtl?.abort(); $('start').hidden = true; openProject(state.project.id); });
   $('btn-action').addEventListener('click', () => fade(enterOutdoor));
   $('btn-room').addEventListener('click', () => fade(enterRoom));
   $('btn-reset').addEventListener('click', resetPosition);
-  $('btn-plan').addEventListener('click', showPlanImport);
+  $('btn-plan').addEventListener('click', () => backToWizard(state.project.images?.length ? 'request' : 'images'));
+  $('btn-proj').addEventListener('click', () => backToWizard('home'));
   $('btn-view').addEventListener('click', () => {
     settings.view = settings.view === 'bird' ? 'eye' : 'bird';
     saveSettings();
@@ -753,8 +722,9 @@ function main() {
     }
     minimap.setBig(!minimap.big);
   });
-  window.__app = { state, get settings() { return settings; }, enterRoom, enterOutdoor, setDest, frame, camera };
+  window.__app = { state, get settings() { return settings; }, enterRoom, enterOutdoor, setDest, camera, openWalk };
   tick();
-  startLoading(false);
+  await migrateLegacy();
+  showHome();
 }
 main();

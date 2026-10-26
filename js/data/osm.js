@@ -1,6 +1,6 @@
 // OpenStreetMap（Overpass API）から道路・店舗・駅・対象建物を取得して、ローカル座標に変換する
-import { SOURCES, TARGET_OSM_WAY, PROPERTY } from '../config.js';
-import { ringArea, ringCentroid } from '../geo.js';
+import { SOURCES } from '../config.js';
+import { ringArea, ringCentroid, pointInRing, closestOnSeg } from '../geo.js';
 
 export async function overpass(query, { signal, timeoutMs = 90000 } = {}) {
   let lastErr;
@@ -30,16 +30,17 @@ export async function overpass(query, { signal, timeoutMs = 90000 } = {}) {
 
 const bb = (b) => `(${b.s.toFixed(6)},${b.w.toFixed(6)},${b.n.toFixed(6)},${b.e.toFixed(6)})`;
 
-export function mainQuery(bbox) {
-  const B = bb(bbox);
+// bbox: 道路・店舗の範囲、sbox: 駅だけ広めの範囲、center: 物件位置（対象建物の候補を探す）
+export function mainQuery(bbox, sbox, center) {
+  const B = bb(bbox), SB = bb(sbox || bbox);
+  const near = center ? `way["building"](around:35,${center.lat.toFixed(6)},${center.lon.toFixed(6)});` : '';
   return `[out:json][timeout:90];
 (
   way["highway"]${B};
   nwr["shop"~"^(convenience|supermarket)$"]${B};
-  nwr["railway"="station"]${B};
-  node["railway"~"^(train_station_entrance|subway_entrance)$"]${B};
-  way(${TARGET_OSM_WAY});
-  way["name"="${PROPERTY.name}"]${B};
+  nwr["railway"="station"]${SB};
+  node["railway"~"^(train_station_entrance|subway_entrance)$"]${SB};
+  ${near}
 )->.a;
 (.a; >;)->.b;
 .b out body qt;`;
@@ -136,12 +137,22 @@ export function parseMain(json, frame) {
     walk.push({ id: w.id, pts, nodeIds: ids, hw: info.hw, half: info.half, name: w.tags.name || '' });
   }
 
-  // 対象建物
+  // 対象建物：物件位置（ローカル原点）を含む建物、なければ 20m 以内で最も近い建物
   let target = null;
-  const tw = ways.find((w) => w.id === TARGET_OSM_WAY) || ways.find((w) => w.tags?.name === PROPERTY.name && w.tags?.building);
-  if (tw) {
-    const ring = tw.nodes.map((id) => nodes.get(id)).filter(Boolean).map(xz);
+  let tw = null, twRing = null, bestD = 20;
+  for (const w of ways) {
+    if (!w.tags?.building) continue;
+    const ring = w.nodes.map((id) => nodes.get(id)).filter(Boolean).map(xz);
     if (ring.length > 3 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
+    if (ring.length < 3) continue;
+    if (pointInRing(0, 0, ring)) { tw = w; twRing = ring; bestD = -1; break; }
+    for (let i = 0; i < ring.length; i++) {
+      const d = closestOnSeg(0, 0, ring[i][0], ring[i][1], ring[(i + 1) % ring.length][0], ring[(i + 1) % ring.length][1]).d;
+      if (d < bestD) { bestD = d; tw = w; twRing = ring; }
+    }
+  }
+  if (tw) {
+    const ring = twRing;
     const entrances = tw.nodes
       .map((id) => nodes.get(id))
       .filter((n) => n && n.tags && n.tags.entrance)
@@ -149,6 +160,9 @@ export function parseMain(json, frame) {
     target = {
       osmId: tw.id,
       ring,
+      containsPin: bestD < 0,
+      name: tw.tags.name || null,
+      height: parseFloat(tw.tags.height) || null,
       levels: parseInt(tw.tags['building:levels'] || '0', 10) || null,
       entrances,
       tags: tw.tags,

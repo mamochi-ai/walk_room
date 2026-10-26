@@ -1,49 +1,16 @@
-// 物件・データソースの設定。
-// status: 'confirmed'（確認済）/ 'estimated'（推定）/ 'missing'（未取得）
+// 共通設定。物件ごとの情報は端末内の「物件」データ（js/project.js）で管理する。
 // 調査の詳細は docs/RESEARCH.md を参照。
 
-export const PROPERTY = {
-  id: 'latierra-musashikosugi-312', // 端末内に保存する間取りのキー
-  name: 'ラティエラ武蔵小杉',
-  unit: '312号室',
-  address: '神奈川県川崎市中原区小杉町2丁目220',
-  // 間取りの取り込み時に Claude へ渡す確認済み情報（物件を変えるときはここを変える）
-  unitInfo: { floor: 3, layout: '1LDK+SIC', areaM2: 35.95 },
-  facts: [
-    { label: '所在地', value: '川崎市中原区小杉町2-220', status: 'confirmed', src: '三井の賃貸 掲載ページ／OSM' },
-    { label: '規模・構造', value: '鉄筋コンクリート造 地上6階建', status: 'confirmed', src: '三井の賃貸 掲載ページ／東京ガス不動産 2023-01-19 発表' },
-    { label: '竣工', value: '2022年11月30日', status: 'confirmed', src: '三井の賃貸 掲載ページ' },
-    { label: '312号室', value: '3階・1LDK+SIC・35.95㎡', status: 'confirmed', src: '三井の賃貸 掲載ページ（検索結果の抜粋で確認）' },
-    { label: '住戸の向き', value: '西の可能性（1階の同面積1LDK住戸が「西」と掲載）', status: 'estimated', src: '賃貸ポータル掲載（312号室自体の方位は未確認）' },
-    { label: '間取り図', value: '未取得（添付なし・取得不可）', status: 'missing', src: '' },
-    { label: '天井高・階高・窓寸法', value: '未取得', status: 'missing', src: '' },
-    { label: '住戸の建物内位置', value: '未取得（仮配置）', status: 'missing', src: '' },
-  ],
-};
+// 範囲：徒歩範囲（この外へは出られない）、建物・道路の取得範囲、駅だけ広めに取得する範囲
+export const WALK_RADIUS = 500;
+export const DATA_RADIUS = 600;
+export const STATION_RADIUS = 1500;
 
-// 原点：OSM の建物 way 1350297048（ラティエラ武蔵小杉）の代表点。
-// 実行時に OSM から外形を取得できた場合は、その重心で置き換える。
-export const ORIGIN = { lat: 35.57927, lon: 139.6556 };
-export const TARGET_OSM_WAY = 1350297048;
-
-// 範囲：徒歩範囲（この外へは出られない）と、データ取得範囲
-// 武蔵小杉駅・新丸子駅を含めるため 500m を 700m に拡張。
-export const WALK_RADIUS = 700;
-export const DATA_RADIUS = 800;
-
-// 対象建物の概算（PLATEAU に竣工後の形状が無い場合に使う）
+// 対象建物の高さが実データで得られないときの概算
 export const TARGET_ESTIMATE = {
-  floors: 6,
   storyHeight: 3.0, // 推定（未確認）
   groundFloorRaise: 0.3, // 1階床の地面からの高さ（推定）
   parapet: 1.0, // 推定
-};
-
-// 住戸の仮配置（間取り図・位置が確認できるまで調整可能）
-export const UNIT_PLACEMENT_DEFAULT = {
-  floor: 3,
-  facade: 'W', // 推定
-  along: 0.5,
 };
 
 export const EYE_HEIGHT_DEFAULT = 1.6;
@@ -62,17 +29,39 @@ export const SOURCES = {
   },
   plateau: {
     // https://docs.plateauview.mlit.go.jp/datasets/3d-tiles/ 「4.2 複合 tileset.json」
-    // {area}-{type}-{lod}-{year}。川崎市は 2020・2022年度が公開。区コード/市コード/県コードの順に試す。
+    // 全国（all）の複合タイルセット。各自治体の最新整備年度を採用。範囲内の自治体・タイルだけを取得する。
     tilesetCandidates: [
-      'https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/14133-bldg-lod1-2022/tileset.json',
-      'https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/14130-bldg-lod1-2022/tileset.json',
-      'https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/14-bldg-lod1-2022/tileset.json',
+      'https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/all-bldg-lod1-latest/tileset.json',
+      'https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/all-bldg-maxlod1-latest/tileset.json',
     ],
-    year: 2022,
-    attribution: '3D都市モデル（Project PLATEAU）川崎市（2022年度）国土交通省 を加工して作成',
-    url: 'https://www.geospatial.jp/ckan/dataset/plateau-14130-kawasaki-shi-2022',
+    attribution: '3D都市モデル（Project PLATEAU）国土交通省 を加工して作成',
+    url: 'https://www.mlit.go.jp/plateau/open-data/',
+  },
+  gsiTiles: {
+    // 地理院タイル（淡色地図）。出典明示でリアルタイム読み込みは申請不要。
+    url: 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png',
+    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>',
+    maxZoom: 18,
   },
 };
 
-export const CACHE_KEY = 'area-v1';
+// 住所検索。どちらも利用者が明示的に選んだときだけ使う（既定は未選択）。
+// エンドポイントを変える必要が出たら、ここを書き換える。
+export const GEOCODERS = {
+  nominatim: {
+    label: 'OpenStreetMap Nominatim',
+    url: 'https://nominatim.openstreetmap.org/search',
+    policy: 'https://operations.osmfoundation.org/policies/nominatim/',
+    terms: '利用者の操作による検索のみ・最大1秒に1回・自動補完は禁止・出典表示が必要。利用者が規約を確認して選ぶことが条件です。日本の住所は町丁目までしか当たらないことがあります。',
+    attribution: '© OpenStreetMap contributors（Nominatim）',
+  },
+  gsi: {
+    label: '国土地理院 地理院地図の住所検索',
+    url: 'https://msearch.gsi.go.jp/address-search/AddressSearch',
+    policy: 'https://maps.gsi.go.jp/help/termsofuse.html',
+    terms: '地理院地図で使われている住所検索です。この検索機能自体の利用規約は公開されておらず、提供元・提供条件が明確ではありません。継続利用する場合は提供元に確認してください。',
+    attribution: '住所検索：国土地理院（地理院地図）',
+  },
+};
+
 export const CACHE_DAYS = 30;

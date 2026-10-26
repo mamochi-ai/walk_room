@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#e9e6df">
-<title>武蔵小杉 312号室ウォーク</title>
+<title>間取りウォーク</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <link rel="stylesheet" href="css/app.css">
 <script type="importmap">
 { "imports": {
@@ -24,10 +25,11 @@
 
 <header id="topbar" hidden>
   <div class="title">
-    <strong>ラティエラ武蔵小杉</strong><span>312号室</span>
+    <strong id="title-name"></strong><span id="title-unit"></span>
     <em id="mode-chip" class="chip mode">屋外</em>
   </div>
   <nav class="tools">
+    <button id="btn-proj" type="button" aria-label="物件一覧へ">物件</button>
     <button id="btn-poi" type="button">施設</button>
     <button id="btn-data" type="button">出典</button>
     <button id="btn-settings" type="button">設定</button>
@@ -57,12 +59,35 @@
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="fade"></div>
 
-<!-- 開始画面 -->
-<section id="start" class="overlay">
+<!-- 物件一覧 -->
+<section id="home" class="overlay page">
+  <div class="page-card">
+    <p class="eyebrow">間取り画像から、室内と周辺の街を歩く</p>
+    <h1>間取りウォーク</h1>
+    <p class="lead">物件の間取り画像を登録し、Claude に読み取ってもらった結果を貼り付けると、室内と周辺の地図（道路・建物・コンビニ・スーパー・駅）を作ります。有料の AI API は使いません。</p>
+    <div class="row"><button type="button" id="home-new" class="primary big">新しい物件を登録</button></div>
+    <h2>登録した物件</h2>
+    <ul id="home-list" class="proj-list"></ul>
+    <div class="row"><button type="button" id="home-sample" hidden>サンプル物件を追加（ラティエラ武蔵小杉・位置のみ）</button></div>
+    <p class="fine">画像・解析結果・物件情報はこの端末のブラウザ内にだけ保存されます。</p>
+  </div>
+</section>
+
+<!-- 登録手順 -->
+<section id="wizard" class="overlay page" hidden>
+  <header class="wiz-head">
+    <button type="button" id="wiz-home" class="ghost">‹ 物件一覧</button>
+    <strong id="wiz-title"></strong>
+  </header>
+  <nav id="wiz-steps" class="wiz-steps" aria-label="手順"></nav>
+  <div id="wiz-body" class="wiz-body"></div>
+</section>
+
+<!-- 歩く前の読み込み -->
+<section id="start" class="overlay" hidden>
   <div class="start-card">
-    <p class="eyebrow">川崎市中原区小杉町2丁目 ・ 実在物件の周辺を歩く試作</p>
-    <h1>ラティエラ武蔵小杉<br><span>312号室から街へ</span></h1>
-    <p class="lead">室内（窓からの眺め）→ 建物入口 → 周辺の道路 → コンビニ・スーパー・駅。建物は PLATEAU、道路と店舗は OpenStreetMap の実データを使います。</p>
+    <p class="eyebrow">周辺の街を準備しています</p>
+    <h1 id="start-title"></h1>
     <div id="load-status" class="load-status"><span class="spinner"></span><span id="load-text">準備中…</span></div>
     <div id="load-error" class="load-error" hidden>
       <p id="load-error-text"></p>
@@ -70,7 +95,8 @@
       <button id="btn-retry" type="button">再試行</button>
     </div>
     <button id="btn-start" type="button" class="primary big" disabled>歩いてみる</button>
-    <p class="fine">初回は対象範囲（半径約800m）のデータだけを取得し、端末に保存します。<br>写真のような景色ではなく、位置・形・高さを優先した模型表示です。</p>
+    <div class="row"><button id="btn-skip" type="button" hidden>室内だけ先に見る</button><button id="btn-back" type="button" class="ghost">‹ 手順に戻る</button></div>
+    <p class="fine">周辺データは物件位置から半径約600mの範囲だけを取得し、端末に保存します（駅は約1.5kmまで）。<br>写真のような景色ではなく、位置・形・高さを優先した模型表示です。</p>
   </div>
 </section>
 
