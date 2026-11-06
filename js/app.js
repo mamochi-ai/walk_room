@@ -13,7 +13,7 @@ import { Controls } from './ui/controls.js';
 import { Minimap } from './ui/minimap.js';
 import { closestOnSeg, fmtMeters, ringCentroid, LocalFrame } from './geo.js';
 import { INFO_FIELDS, SOURCE_LABEL, fmtValue } from './plan/format.js';
-import { putProject } from './store.js';
+import { putProject, getProject } from './store.js';
 import { displayName, planOf, resolveFacing, migrateLegacy } from './project.js';
 import { initWizard, showHome, openProject } from './ui/wizard.js';
 
@@ -57,6 +57,7 @@ function initRenderer() {
   renderer.setClearColor(COLORS.sky);
   scene = new THREE.Scene();
   scene.fog = new THREE.Fog(COLORS.sky, 350, 1150);
+  scene.background = skyTexture();
   camera = new THREE.PerspectiveCamera(70, 1, 0.05, 1600);
   camera.rotation.order = 'YXZ';
   // 模型のように影の少ない明るい照明
@@ -68,8 +69,26 @@ function initRenderer() {
   resize();
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', () => setTimeout(resize, 200));
-  canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); toast('3D表示が一時停止しました。ページを再読み込みしてください。', 6000); });
+  // iPad/iPhone では別アプリ（Claude など）から戻ったときに 3D 表示が失われることがある。復帰を待つ
+  canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); contextLost = true; controls?.stopAll(); });
+  canvas.addEventListener('webglcontextrestored', () => { contextLost = false; toast('3D表示を再開しました'); });
 }
+let contextLost = false;
+// 空：上は淡い青、地平線は霧の色に合わせる
+function skyTexture() {
+  const c = document.createElement('canvas');
+  c.width = 2; c.height = 256;
+  const g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, 256);
+  gr.addColorStop(0, '#b9cddb');
+  gr.addColorStop(0.55, '#d5e0e7');
+  gr.addColorStop(1, '#dfe6ea');
+  g.fillStyle = gr; g.fillRect(0, 0, 2, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
 function applyQuality() {
   const q = { low: 1, normal: 1.5, high: 2 }[settings.quality] || 1.5;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q));
@@ -310,6 +329,8 @@ function updateModeUi() {
   $('btn-plan').hidden = m !== 'window';
   $('btn-reset').hidden = m === 'window';
   $('btn-view').hidden = m !== 'outdoor';
+  // 室内では、建物の向こう側の施設名札（薄い表示）を出さない
+  for (const it of poiMarkers?.items || []) it.behind.visible = m === 'outdoor';
   $('btn-view').textContent = settings.view === 'bird' ? '目線に戻す' : '俯瞰で見る';
   const bird = m === 'outdoor' && settings.view === 'bird';
   avatar.visible = bird;
@@ -617,6 +638,8 @@ let hintsHidden = false;
 function tick() {
   requestAnimationFrame(tick);
   const dt = Math.min(clock.getDelta(), 0.1);
+  // 物件一覧・手順画面の表示中や 3D 表示が失われている間は描画しない（電池と発熱を抑える）
+  if (contextLost || !$('home').hidden || !$('wizard').hidden || document.hidden) return;
   if (!state.data || state.mode === 'loading') { renderer.render(scene, camera); return; }
   const inp = controls.read();
   // 視点
@@ -724,9 +747,13 @@ async function main() {
     }
     minimap.setBig(!minimap.big);
   });
-  window.__app = { state, get settings() { return settings; }, enterRoom, enterOutdoor, setDest, camera, openWalk };
+  window.__app = { state, get settings() { return settings; }, get poiMarkers() { return poiMarkers; }, get frames() { return renderer.info.render.frame; }, enterRoom, enterOutdoor, setDest, camera, openWalk };
   tick();
   await migrateLegacy();
-  showHome();
+  // Claude アプリとの行き来でタブが再読み込みされても、手順の続きから再開する
+  let last = null;
+  try { last = JSON.parse(localStorage.getItem('walk-room-last') || 'null'); } catch { /* noop */ }
+  if (last?.id && (await getProject(last.id))) openProject(last.id, last.step);
+  else showHome();
 }
 main();

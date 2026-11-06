@@ -43,6 +43,7 @@ export function initWizard(opts) {
 // ---------------- 物件一覧 ----------------
 export async function showHome() {
   destroyMap();
+  remember(null);
   $('wizard').hidden = true;
   $('home').hidden = false;
   const list = await listProjects();
@@ -58,6 +59,7 @@ export async function showHome() {
     const chip = (ok, label) => `<span class="chip ${ok ? 'ok' : 'miss'}">${ok ? '✓' : '・'} ${label}</span>`;
     const canWalk = s.analysis || s.location;
     return `<li class="proj">
+      <div class="proj-thumb" data-thumb="${esc(p.images?.[0]?.id || '')}">${p.images?.length ? '' : '<span>画像なし</span>'}</div>
       <div class="proj-main"><strong>${esc(displayName(p))}</strong>
         <small>${esc(p.info?.address?.value || '住所未入力')}</small>
         <div class="chips">${chip(s.images, '画像')}${chip(s.analysis, '間取り')}${chip(s.info, '住所')}${chip(s.location, '位置確定')}</div></div>
@@ -67,8 +69,13 @@ export async function showHome() {
         <button type="button" class="ghost" data-del="${esc(p.id)}">削除</button>
       </div></li>`;
   }).join('');
+  el.querySelectorAll('[data-thumb]').forEach(async (d) => {
+    if (!d.dataset.thumb) return;
+    const u = await imgUrl(d.dataset.thumb);
+    if (u) d.innerHTML = `<img alt="" src="${esc(u)}">`;
+  });
   el.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openProject(b.dataset.open)));
-  el.querySelectorAll('[data-walk]').forEach((b) => b.addEventListener('click', async () => { const p = await getProject(b.dataset.walk); $('home').hidden = true; onWalk(p); }));
+  el.querySelectorAll('[data-walk]').forEach((b) => b.addEventListener('click', async () => { const p = await getProject(b.dataset.walk); $('home').hidden = true; remember(null); onWalk(p); }));
   el.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', () => {
     if (b.dataset.confirm) {
       getProject(b.dataset.del).then((p) => p && deleteProject(p)).then(showHome);
@@ -91,8 +98,13 @@ async function save() {
   await putProject(cur);
 }
 
+function remember(v) {
+  try { if (v) localStorage.setItem('walk-room-last', JSON.stringify(v)); else localStorage.removeItem('walk-room-last'); } catch { /* noop */ }
+}
+
 function render() {
   destroyMap();
+  remember({ id: cur.id, step });
   $('wiz-title').textContent = displayName(cur);
   const s = steps(cur);
   const done = { images: s.images, request: s.analysis, paste: s.analysis, review: s.info, location: s.location };
@@ -500,6 +512,7 @@ function renderLocation(body) {
     if (!s.location) toast('位置が未確定のため、周辺の街は表示されません', 4000);
     destroyMap();
     $('wizard').hidden = true;
+    remember(null);
     onWalk(cur);
   });
 }

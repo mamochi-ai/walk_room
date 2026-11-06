@@ -61,6 +61,7 @@ async function newPage(browser, device, opts = {}) {
 const S = (page, f, a) => page.evaluate(f, a);
 const state = (page) => S(page, () => { const s = window.__app.state; return { mode: s.mode, pos: { ...s.pos }, yaw: s.yaw, dest: s.dest?.id || null }; });
 const blockAt = (page) => S(page, () => { const s = window.__app.state; const nav = s.mode === 'indoor' ? s.interior.nav : s.nav; return nav.blockReason(s.pos.x, s.pos.z, 0.25); });
+const waitMode = (page, m) => page.waitForFunction((m) => window.__app.state.mode === m, m, { timeout: 15000 }).catch(() => null);
 const clip = (page) => S(page, () => navigator.clipboard.readText());
 async function touch(cdp, type, points) {
   await cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points.map((p) => ({ x: p.x, y: p.y, id: p.id, radiusX: 2, radiusY: 2, force: 1 })) });
@@ -121,6 +122,12 @@ console.log('\n[1] iPhone 縦：画像登録から歩くまで');
   await page.click('#wz-load');
   await page.waitForSelector('#wz-canvas');
   check(true, '正しい回答を読み込んで確認画面へ');
+  // Claude アプリから戻ったときにタブが再読み込みされた場合
+  await page.reload();
+  await page.waitForSelector('#wz-canvas', { timeout: 10000 }).catch(() => null);
+  check(await page.isVisible('#wz-canvas'), '再読み込みしても手順の続き（確認画面）から再開');
+  const f0 = await S(page, () => window.__app.frames); await page.waitForTimeout(400); const f1 = await S(page, () => window.__app.frames);
+  check(f1 === f0, '手順画面の表示中は3D描画を止める（電池・発熱対策）');
 
   // 確認画面
   const infoTxt = await page.textContent('.info-form');
@@ -182,6 +189,7 @@ console.log('\n[1] iPhone 縦：画像登録から歩くまで');
   let s = await state(page);
   check(s.mode === 'indoor' && (await blockAt(page)) === null, '室内から開始・初期位置が壁に埋まらない');
   check((await page.textContent('#title-name')) === 'テスト用マンション', '物件名を表示');
+  check(await S(page, () => window.__app.poiMarkers.items.every((it) => !it.behind.visible)), '室内では建物越しの施設名札を出さない');
   const notes = await page.textContent('#notices');
   check(notes.includes('仮配置') && notes.includes('Claude読み取り'), '仮配置・読み取り由来を表示');
   const facing = await S(page, () => window.__app.state.facing);
@@ -208,7 +216,7 @@ console.log('\n[1] iPhone 縦：画像登録から歩くまで');
   s = await state(page);
   check(s.mode === 'outdoor' && (await blockAt(page)) === null, '屋外へ（道路上・建物外）');
   const ent = await S(page, () => window.__app.state.entrance.status);
-  check(ent === 'user', '地図で置いた入口ピンから屋外に出る');
+  check(ent === 'user', `地図で置いた入口ピンから屋外に出る（${ent}）`);
   check(await noOverlap(page, ['.title', '.tools', '#notices', '#minimap', '#bottombar'], 390, 844), 'iPhone 縦で歩行画面の UI が重ならない');
   await page.screenshot({ path: SHOTS + 'iphone-outdoor.png' });
   check(errors.length === 0, `コンソールエラーなし ${errors.join(' | ')}`);
@@ -242,8 +250,9 @@ console.log('\n[2] iPad 横：サンプル物件で屋外の操作');
   await page.click('[data-walk="sample-latierra-312"]');
   await page.waitForFunction(() => !document.getElementById('btn-start').disabled, null, { timeout: 30000 });
   await page.click('#btn-start');
-  await page.waitForTimeout(700);
-  check((await state(page)).mode === 'window', '間取り未取り込みなら窓から見る（推定）');
+  await waitMode(page, 'window');
+  const m0 = await state(page);
+  check(m0.mode === 'window', `間取り未取り込みなら窓から見る（推定）（${m0.mode}）`);
   await page.click('#btn-action');
   await page.waitForTimeout(700);
   check((await state(page)).mode === 'outdoor' && (await blockAt(page)) === null, '屋外へ');
